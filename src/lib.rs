@@ -35,6 +35,146 @@ impl<'a, C: Capability> Provision<'a, C> {
     }
 }
 
+/// One module's requirement for a single typed capability.
+pub struct CapabilityRequirement<C: Capability> {
+    required_by: ModuleId,
+    selected: Option<ModuleId>,
+    capability: PhantomData<C>,
+}
+
+impl<C: Capability> Copy for CapabilityRequirement<C> {}
+
+impl<C: Capability> Clone for CapabilityRequirement<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C: Capability> CapabilityRequirement<C> {
+    /// Declares a requirement with an optional explicit provider selection.
+    pub const fn new(required_by: ModuleId, selected: Option<ModuleId>) -> Self {
+        Self {
+            required_by,
+            selected,
+            capability: PhantomData,
+        }
+    }
+
+    /// Returns the module that owns this requirement.
+    pub const fn required_by(self) -> ModuleId {
+        self.required_by
+    }
+}
+
+/// A caller-owned, single-capability composition snapshot.
+///
+/// This prototype stores declarations only; it does not construct modules or
+/// keep global state. Edits return a new snapshot so callers can validate the
+/// resulting graph before adopting it.
+pub struct CapabilityComposition<'a, C: Capability> {
+    provisions: Vec<Provision<'a, C>>,
+    requirements: Vec<CapabilityRequirement<C>>,
+}
+
+impl<'a, C: Capability> CapabilityComposition<'a, C> {
+    /// Creates a composition snapshot from providers and consumer requirements.
+    pub fn new(
+        provisions: Vec<Provision<'a, C>>,
+        requirements: Vec<CapabilityRequirement<C>>,
+    ) -> Self {
+        Self {
+            provisions,
+            requirements,
+        }
+    }
+
+    /// Removes a module's declarations and revalidates the remaining graph.
+    ///
+    /// Requirements owned by other modules remain, even when the removed module
+    /// was their selected provider; validation then reports the broken edge.
+    pub fn without_module(&self, module: ModuleId) -> Self {
+        Self {
+            provisions: self
+                .provisions
+                .iter()
+                .filter(|provision| provision.module != module)
+                .map(|provision| Provision::new(provision.module, provision.value))
+                .collect(),
+            requirements: self
+                .requirements
+                .iter()
+                .copied()
+                .filter(|requirement| requirement.required_by != module)
+                .collect(),
+        }
+    }
+
+    /// Returns the active consumer requirements in this snapshot.
+    pub fn requirements(&self) -> &[CapabilityRequirement<C>] {
+        &self.requirements
+    }
+
+    /// Replaces one provider for this capability while retaining module
+    /// requirements and redirecting explicit selections to the replacement.
+    /// Returns `None` when `replaced` does not currently provide this capability.
+    pub fn replace_provider(
+        &self,
+        replaced: ModuleId,
+        replacement: Provision<'a, C>,
+    ) -> Option<Self> {
+        if !self
+            .provisions
+            .iter()
+            .any(|provision| provision.module == replaced)
+        {
+            return None;
+        }
+
+        let mut provisions = self
+            .provisions
+            .iter()
+            .filter(|provision| provision.module != replaced)
+            .map(|provision| Provision::new(provision.module, provision.value))
+            .collect::<Vec<_>>();
+        let replacement_module = replacement.module;
+        provisions.push(replacement);
+        let requirements = self
+            .requirements
+            .iter()
+            .map(|requirement| {
+                CapabilityRequirement::new(
+                    requirement.required_by,
+                    (requirement.selected == Some(replaced))
+                        .then_some(replacement_module)
+                        .or(requirement.selected),
+                )
+            })
+            .collect();
+
+        Some(Self::new(provisions, requirements))
+    }
+
+    /// Resolves one declared requirement against this snapshot.
+    pub fn resolve_requirement(
+        &self,
+        requirement: CapabilityRequirement<C>,
+    ) -> Result<&'a C::Value, CompositionError> {
+        Resolver::resolve::<C>(
+            requirement.required_by,
+            &self.provisions,
+            requirement.selected,
+        )
+    }
+
+    /// Revalidates every consumer requirement in this snapshot.
+    pub fn validate(&self) -> Result<(), CompositionError> {
+        for requirement in &self.requirements {
+            self.resolve_requirement(*requirement)?;
+        }
+        Ok(())
+    }
+}
+
 /// A capability provision distinguished by a compile-time qualifier type.
 pub struct QualifiedProvision<'a, C: Capability, Q: Qualifier> {
     module: ModuleId,

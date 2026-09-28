@@ -6,7 +6,8 @@ use rustclamp_core::{
     Capability, CapabilityId, Clock, ClockCapability, ModuleId, Qualifier, QualifierId,
 };
 use rustclamp_kernel::{
-    CompositionError, CompositionErrorKind, Provision, QualifiedProvision, Resolver,
+    CapabilityComposition, CapabilityRequirement, CompositionError, CompositionErrorKind,
+    Provision, QualifiedProvision, Resolver,
 };
 
 const GREETER: ModuleId = ModuleId::new("test.greeter");
@@ -240,5 +241,66 @@ fn many_requirement_returns_all_values_in_stable_identity_order() {
             UNIX_EPOCH + Duration::from_secs(42),
             UNIX_EPOCH + Duration::from_secs(1),
         ]
+    );
+}
+
+#[test]
+fn removing_a_required_provider_keeps_consumer_and_fails_revalidation() {
+    let system = FixedClock(UNIX_EPOCH + Duration::from_secs(1));
+    let requirement = CapabilityRequirement::<ClockCapability>::new(GREETER, None);
+    let module_requirement = CapabilityRequirement::<ClockCapability>::new(SYSTEM_CLOCK, None);
+    let composition = CapabilityComposition::new(
+        vec![Provision::<ClockCapability>::new(
+            SYSTEM_CLOCK,
+            &system as &dyn Clock,
+        )],
+        vec![requirement, module_requirement],
+    );
+    assert!(composition.validate().is_ok());
+
+    let without_provider = composition.without_module(SYSTEM_CLOCK);
+    assert_eq!(without_provider.requirements().len(), 1);
+    assert_eq!(without_provider.requirements()[0].required_by(), GREETER);
+    let error = error(without_provider.validate());
+
+    assert_eq!(error.kind(), CompositionErrorKind::MissingProvider);
+    assert_eq!(error.required_by(), GREETER);
+}
+
+#[test]
+fn replacing_one_provider_preserves_and_revalidates_consumer_requirements() {
+    let system = FixedClock(UNIX_EPOCH + Duration::from_secs(1));
+    let fixed = FixedClock(UNIX_EPOCH + Duration::from_secs(42));
+    let requirement = CapabilityRequirement::<ClockCapability>::new(GREETER, Some(SYSTEM_CLOCK));
+    let composition = CapabilityComposition::new(
+        vec![Provision::<ClockCapability>::new(
+            SYSTEM_CLOCK,
+            &system as &dyn Clock,
+        )],
+        vec![requirement],
+    );
+
+    let replaced = composition
+        .replace_provider(
+            SYSTEM_CLOCK,
+            Provision::<ClockCapability>::new(FIXED_CLOCK, &fixed as &dyn Clock),
+        )
+        .expect("existing provider should be replaceable");
+
+    assert!(replaced.validate().is_ok());
+    assert_eq!(
+        replaced
+            .resolve_requirement(replaced.requirements()[0])
+            .unwrap()
+            .now(),
+        UNIX_EPOCH + Duration::from_secs(42)
+    );
+    assert!(
+        composition
+            .replace_provider(
+                ModuleId::new("test.not-a-provider"),
+                Provision::<ClockCapability>::new(FIXED_CLOCK, &fixed as &dyn Clock),
+            )
+            .is_none()
     );
 }
