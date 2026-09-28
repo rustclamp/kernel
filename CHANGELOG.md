@@ -9,6 +9,8 @@
   snapshots with distinct module removal and provider replacement operations.
 - Caller-owned construction dependency graphs with deterministic, structured
   cycle paths.
+- Caller-owned typed contribution collections that delegate build semantics to
+  Core's public contribution-target contract and report required orphans.
 - Adapters from additive Core module, requirement, and provision contracts to
   the typed resolver declarations.
 - Phase 0 package scaffold and development checks.

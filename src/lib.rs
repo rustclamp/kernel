@@ -9,8 +9,77 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use rustclamp_core::{
-    Capability, CapabilityId, Module, ModuleId, Provides, Qualifier, QualifierId, Requires,
+    Capability, CapabilityId, Contribution, ContributionId, ContributionTarget,
+    ContributionTargetId, Module, ModuleId, Provides, Qualifier, QualifierId, Requires,
 };
+
+/// Caller-owned declarations for one typed contribution target and qualifier.
+pub struct TargetComposition<T: ContributionTarget, Q: Qualifier> {
+    contributions: Vec<(ModuleId, T::Contribution)>,
+    target: PhantomData<(T, Q)>,
+}
+
+impl<T: ContributionTarget, Q: Qualifier> TargetComposition<T, Q> {
+    /// Creates a target composition from contributor identities and declarations.
+    pub fn new(contributions: Vec<(ModuleId, T::Contribution)>) -> Self {
+        Self {
+            contributions,
+            target: PhantomData,
+        }
+    }
+
+    /// Consumes declarations into the selected target's runtime form.
+    ///
+    /// If no target is selected, required declarations produce a structured
+    /// unconsumed-contribution error. Optional declarations are discarded. An
+    /// empty composition without a target is a no-op.
+    pub fn build(
+        self,
+        target: Option<&T>,
+    ) -> Result<Option<T::Runtime>, TargetCompositionError<T::Error>> {
+        let Some(target) = target else {
+            let mut contributors = self
+                .contributions
+                .iter()
+                .filter(|_| T::Contribution::REQUIRED)
+                .map(|(module, _)| *module)
+                .collect::<Vec<_>>();
+            if contributors.is_empty() {
+                return Ok(None);
+            }
+            contributors.sort_unstable();
+            return Err(TargetCompositionError::UnconsumedRequired {
+                target: T::ID,
+                contribution: T::Contribution::ID,
+                qualifier: Q::ID,
+                contributors,
+            });
+        };
+
+        target
+            .build(&self.contributions)
+            .map(Some)
+            .map_err(TargetCompositionError::Target)
+    }
+}
+
+/// A target-owned build failure or an unconsumed required declaration.
+#[derive(Debug, Eq, PartialEq)]
+pub enum TargetCompositionError<E> {
+    /// The active composition has required declarations but no matching target.
+    UnconsumedRequired {
+        /// The target that was expected to consume the declarations.
+        target: ContributionTargetId,
+        /// The contribution kind that was left unconsumed.
+        contribution: ContributionId,
+        /// The qualifier whose active composition contains the declarations.
+        qualifier: QualifierId,
+        /// Modules that contributed required declarations.
+        contributors: Vec<ModuleId>,
+    },
+    /// The selected target rejected the declarations.
+    Target(E),
+}
 
 /// A capability implementation associated with the module that supplies it.
 ///
