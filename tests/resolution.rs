@@ -7,12 +7,15 @@ use rustclamp_core::{
 };
 use rustclamp_kernel::{
     CapabilityComposition, CapabilityRequirement, CompositionError, CompositionErrorKind,
-    Provision, QualifiedProvision, Resolver,
+    ConstructionDependency, ConstructionGraph, Provision, QualifiedProvision, Resolver,
 };
 
 const GREETER: ModuleId = ModuleId::new("test.greeter");
 const SYSTEM_CLOCK: ModuleId = ModuleId::new("test.system-clock");
 const FIXED_CLOCK: ModuleId = ModuleId::new("test.fixed-clock");
+const A: ModuleId = ModuleId::new("test.a");
+const B: ModuleId = ModuleId::new("test.b");
+const C: ModuleId = ModuleId::new("test.c");
 
 struct Primary;
 struct Simulation;
@@ -303,4 +306,71 @@ fn replacing_one_provider_preserves_and_revalidates_consumer_requirements() {
             )
             .is_none()
     );
+}
+
+#[test]
+fn construction_graph_accepts_acyclic_dependencies() {
+    let graph = ConstructionGraph::new(vec![
+        ConstructionDependency::new(A, B),
+        ConstructionDependency::new(B, C),
+    ]);
+
+    assert!(graph.validate().is_ok());
+}
+
+#[test]
+fn construction_cycle_reports_the_complete_closed_dependency_path() {
+    let graph = ConstructionGraph::new(vec![
+        ConstructionDependency::new(A, B),
+        ConstructionDependency::new(B, C),
+        ConstructionDependency::new(C, A),
+    ]);
+
+    let cycle = graph.validate().unwrap_err();
+    assert_eq!(cycle.path(), &[A, B, C, A]);
+    assert_eq!(
+        cycle.to_string(),
+        "construction cycle: test.a -> test.b -> test.c -> test.a"
+    );
+}
+
+#[test]
+fn construction_cycle_diagnostic_is_registration_order_independent() {
+    let forward = ConstructionGraph::new(vec![
+        ConstructionDependency::new(A, B),
+        ConstructionDependency::new(B, A),
+        ConstructionDependency::new(C, A),
+    ]);
+    let reverse = ConstructionGraph::new(vec![
+        ConstructionDependency::new(C, A),
+        ConstructionDependency::new(B, A),
+        ConstructionDependency::new(A, B),
+    ]);
+
+    assert_eq!(
+        forward.validate().unwrap_err(),
+        reverse.validate().unwrap_err()
+    );
+}
+
+#[test]
+fn construction_graph_reports_a_self_dependency() {
+    let graph = ConstructionGraph::new(vec![ConstructionDependency::new(A, A)]);
+
+    assert_eq!(graph.validate().unwrap_err().path(), &[A, A]);
+}
+
+#[test]
+fn construction_graph_handles_a_deep_acyclic_chain() {
+    const MODULES: usize = 2_048;
+    let ids = (0..MODULES)
+        .map(|index| ModuleId::new(Box::leak(format!("test.chain.{index}").into_boxed_str())))
+        .collect::<Vec<_>>();
+    let dependencies = ids
+        .windows(2)
+        .map(|pair| ConstructionDependency::new(pair[0], pair[1]))
+        .collect();
+    let graph = ConstructionGraph::new(dependencies);
+
+    assert!(graph.validate().is_ok());
 }

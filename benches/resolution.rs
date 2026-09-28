@@ -5,7 +5,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustclamp_core::{Clock, ClockCapability, ModuleId, Qualifier, QualifierId};
 use rustclamp_kernel::{
-    CapabilityComposition, CapabilityRequirement, Provision, QualifiedProvision, Resolver,
+    CapabilityComposition, CapabilityRequirement, ConstructionDependency, ConstructionGraph,
+    Provision, QualifiedProvision, Resolver,
 };
 
 const GREETER: ModuleId = ModuleId::new("bench.greeter");
@@ -47,6 +48,20 @@ fn measure(name: &str, intent: &str, mut operation: impl FnMut()) {
         samples[SAMPLES / 2]
     );
     println!("  Intent: {intent}");
+}
+
+fn module_id(index: usize) -> ModuleId {
+    const IDS: [&str; 8] = [
+        "bench.module.0",
+        "bench.module.1",
+        "bench.module.2",
+        "bench.module.3",
+        "bench.module.4",
+        "bench.module.5",
+        "bench.module.6",
+        "bench.module.7",
+    ];
+    ModuleId::new(IDS[index])
 }
 
 fn main() {
@@ -100,6 +115,16 @@ fn main() {
             values[0],
         )],
         vec![graph_requirement],
+    );
+    let construction_chain = ConstructionGraph::new(
+        (0..7)
+            .map(|index| ConstructionDependency::new(module_id(index), module_id(index + 1)))
+            .collect(),
+    );
+    let construction_cycle = ConstructionGraph::new(
+        (0..8)
+            .map(|index| ConstructionDependency::new(module_id(index), module_id((index + 1) % 8)))
+            .collect(),
     );
 
     let direct = values[7];
@@ -225,6 +250,20 @@ fn main() {
                 )
                 .unwrap();
             black_box(updated.validate().is_ok());
+        },
+    );
+    measure(
+        "construction_graph_validate_chain_8",
+        "Validate that an eight-module dependency chain has a valid construction order.",
+        || {
+            black_box(construction_chain.validate().is_ok());
+        },
+    );
+    measure(
+        "construction_graph_detect_cycle_8",
+        "Detect and report a closed construction cycle across an eight-module ring.",
+        || {
+            black_box(construction_cycle.validate().unwrap_err());
         },
     );
 }

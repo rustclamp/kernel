@@ -31,7 +31,7 @@ flowchart LR
 | --- | --- |
 | External Rust dependencies | 0 |
 | Internal dependencies | Core only |
-| Public composition behavior | Typed resolution, cardinality, and snapshot edits for one capability |
+| Public composition behavior | Typed resolution, cardinality, single-capability snapshot edits, and construction-cycle validation |
 | Tokio, HTTP, or database dependency | None |
 | Behavioral architecture fixtures | None yet |
 
@@ -81,6 +81,19 @@ selections. Both edits create a new snapshot, and `validate` checks every
 remaining consumer before adoption. These are composition-planning operations,
 not runtime module construction or a full application graph. Full timing methods,
 sample ranges, and limitations are in the [Phase 2 evidence](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase2.md).
+
+`ConstructionGraph` separately validates caller-declared module construction
+dependencies. It returns a structured, closed module path for a cycle and
+selects diagnostics deterministically. It does not construct modules or support
+lazy/proxy dependencies. Validation uses an explicit traversal stack, so graph
+depth does not consume the call stack; a 2,048-module chain is covered by a Rust
+test. The latest P2-09 microbench used nine samples of 100,000 validations each
+on the same single host: an acyclic 8-module chain measured 1.780 us/op and an
+8-module cycle measured 1.438 us/op, including diagnostic-path construction.
+An earlier exploratory run before switching to the explicit stack measured
+1.518 / 1.282 us/op; these separate runs are not a controlled A/B comparison.
+All are advisory observations, not performance targets or broad-scale
+guarantees.
 
 ```sh
 cargo fmt --all -- --check

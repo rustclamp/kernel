@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
@@ -288,6 +289,162 @@ impl fmt::Display for CompositionError {
 }
 
 impl Error for CompositionError {}
+
+/// A directed construction dependency from a module to a module it needs.
+///
+/// An edge `consumer -> dependency` means the dependency must be constructed
+/// before the consumer. The graph only validates construction order; it does
+/// not construct modules or support lazy/proxy edges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConstructionDependency {
+    consumer: ModuleId,
+    dependency: ModuleId,
+}
+
+impl ConstructionDependency {
+    /// Declares that `consumer` requires `dependency` during construction.
+    pub const fn new(consumer: ModuleId, dependency: ModuleId) -> Self {
+        Self {
+            consumer,
+            dependency,
+        }
+    }
+
+    /// Returns the module that has the dependency.
+    pub const fn consumer(self) -> ModuleId {
+        self.consumer
+    }
+
+    /// Returns the module required during construction.
+    pub const fn dependency(self) -> ModuleId {
+        self.dependency
+    }
+}
+
+/// A caller-owned set of construction dependencies for cycle validation.
+#[derive(Clone, Debug, Default)]
+pub struct ConstructionGraph {
+    dependencies: Vec<ConstructionDependency>,
+}
+
+impl ConstructionGraph {
+    /// Creates a graph from module-to-module construction dependencies.
+    pub fn new(dependencies: Vec<ConstructionDependency>) -> Self {
+        Self { dependencies }
+    }
+
+    /// Returns the declared construction dependencies.
+    pub fn dependencies(&self) -> &[ConstructionDependency] {
+        &self.dependencies
+    }
+
+    /// Rejects a construction cycle and returns its closed module path.
+    ///
+    /// For example, `A -> B -> C -> A` reports `[A, B, C, A]`. Traversal is
+    /// sorted by stable module identity, so the selected diagnostic is
+    /// independent of dependency registration order.
+    pub fn validate(&self) -> Result<(), ConstructionCycle> {
+        let mut adjacency = BTreeMap::<ModuleId, Vec<ModuleId>>::new();
+        for edge in &self.dependencies {
+            adjacency
+                .entry(edge.consumer)
+                .or_default()
+                .push(edge.dependency);
+            adjacency.entry(edge.dependency).or_default();
+        }
+
+        // Deduplicate and sort once so traversal and diagnostics are stable.
+        for dependencies in adjacency.values_mut() {
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+
+        let mut states = BTreeMap::<ModuleId, VisitState>::new();
+        let mut path = Vec::new();
+        for module in adjacency.keys().copied() {
+            if states
+                .get(&module)
+                .copied()
+                .unwrap_or(VisitState::Unvisited)
+                == VisitState::Unvisited
+            {
+                states.insert(module, VisitState::Visiting);
+                path.push(module);
+                let mut stack = vec![(module, 0usize)];
+
+                while let Some((current, next_index)) = stack.last_mut() {
+                    let dependencies = &adjacency[current];
+                    if *next_index == dependencies.len() {
+                        let (finished, _) = stack.pop().expect("stack is non-empty");
+                        path.pop();
+                        states.insert(finished, VisitState::Visited);
+                        continue;
+                    }
+
+                    let dependency = dependencies[*next_index];
+                    *next_index += 1;
+                    match states
+                        .get(&dependency)
+                        .copied()
+                        .unwrap_or(VisitState::Unvisited)
+                    {
+                        VisitState::Unvisited => {
+                            states.insert(dependency, VisitState::Visiting);
+                            path.push(dependency);
+                            stack.push((dependency, 0));
+                        }
+                        VisitState::Visiting => {
+                            let start = path
+                                .iter()
+                                .position(|item| *item == dependency)
+                                .expect("visiting modules are in the active path");
+                            let mut cycle = path[start..].to_vec();
+                            cycle.push(dependency);
+                            return Err(ConstructionCycle { path: cycle });
+                        }
+                        VisitState::Visited => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum VisitState {
+    Unvisited,
+    Visiting,
+    Visited,
+}
+
+/// A construction cycle with the repeated start module closing its path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConstructionCycle {
+    path: Vec<ModuleId>,
+}
+
+impl ConstructionCycle {
+    /// Returns the dependency path, including the repeated start module.
+    pub fn path(&self) -> &[ModuleId] {
+        &self.path
+    }
+}
+
+impl fmt::Display for ConstructionCycle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("construction cycle: ")?;
+        for (index, module) in self.path.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(" -> ")?;
+            }
+            formatter.write_str(module.as_str())?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for ConstructionCycle {}
 
 /// Resolves one typed requirement from the provisions declared for it.
 pub struct Resolver;
