@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "rustclamp-core"
+version = "0.1.0"
+
+[[package]]
 name = "rustclamp-kernel"
 version = "0.1.0"
+dependencies = [
+ "rustclamp-core",
+]

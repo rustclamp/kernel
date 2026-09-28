@@ -8,6 +8,13 @@ repository = "https://github.com/rustclamp/kernel"
 readme = "README.md"
 publish = false
 
+[dependencies]
+rustclamp-core = { version = "0.1.0", path = "../core" }
+
+[[bench]]
+name = "resolution"
+harness = false
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"

@@ -2,14 +2,15 @@
 
 # rustclamp-kernel
 
-The planned **Kernel component of RustClamp**, the framework in the
+The **Kernel component of RustClamp**, the framework in the
 [`rustclamp`](https://github.com/rustclamp/rustclamp) repository. Kernel is
-intended to compose modules, resolve capabilities, and validate each process.
+responsible for composition, capability resolution, and process validation.
 
-This is a companion package, not a standalone framework. It is currently a Phase 0
-scaffold: there are no public contracts yet. This package builds alone
-with Rust 1.96.1 and has no dependencies. Publishing is disabled until licensing,
-registry ownership and the first prototype API have been reviewed.
+This is a companion package, not a standalone framework. It currently resolves
+one typed capability at a time; application-wide modules and process composition
+are not implemented. It depends only on Core and builds with Rust 1.96.1.
+Publishing is disabled until licensing, registry ownership and the prototype API
+have been reviewed.
 
 The planned composition path is module declarations, capability resolution,
 domain-owned contribution targets, process reachability, validation, freeze,
@@ -29,14 +30,27 @@ flowchart LR
 | Baseline | Current result |
 | --- | --- |
 | External Rust dependencies | 0 |
-| Public composition behavior | 0 |
+| Internal dependencies | Core only |
+| Public composition behavior | Single-capability resolution |
 | Tokio, HTTP, or database dependency | None |
 | Behavioral architecture fixtures | None yet |
 
-There is no Kernel behavior to benchmark yet. The capability prototype will compare
-typed selection with invalid missing and ambiguous cases; later process tests must
-distinguish unreachable runtime work from dependencies or bytes removed from a
-binary.
+The capability prototype tests missing, ambiguous, and explicitly selected
+provisions. On the recorded host, the first in-process benchmark measured these
+median costs:
+
+| Path | Median per resolution |
+| --- | ---: |
+| Direct typed access | 2 ns |
+| One provision | 5 ns |
+| Explicit selection from two | 12 ns |
+| Explicit selection from eight | 31 ns |
+
+These are nine-sample microbenchmark medians over a fixed clock, not end-to-end
+application latency guarantees. Build, binary, and process observations plus
+raw timing samples are in the [Phase 2 evidence](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase2.md).
+Later process tests must distinguish unreachable runtime work from dependencies
+or bytes removed from a binary.
 
 ```sh
 cargo fmt --all -- --check
