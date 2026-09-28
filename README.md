@@ -44,20 +44,34 @@ build measurements use five runs.
 | Metric | Result |
 | --- | ---: |
 | Direct typed access | 2 ns/op |
-| Resolve one provision | 5 ns/op |
+| Resolve one provision | 8 ns/op |
 | Select from 2 provisions | 12 ns/op |
-| Select from 8 provisions | 31 ns/op |
-| Clean build median | 416.90 ms |
-| Unchanged rebuild median | 40.37 ms |
-| Example binary | 4,365,760 B |
-| Process wall-time median | 1.516 ms |
+| Select from 8 provisions | 29 ns/op |
+| Resolve qualified `Primary` provision | 6 ns/op |
+| Select qualified `Primary` from 8 | 27 ns/op |
+| Optional absent / one provider | 6 / 3 ns/op |
+| Collect all providers, 2 / 8 | 17 / 40 ns/op |
+| Clean build median | 451.79 ms |
+| Unchanged rebuild median | 41.87 ms |
+| Example binary | 4,357,888 B |
+| Process wall-time median | 1.297 ms |
 
 For context, Phase 1's Pico example measured 269.18 ms clean build, 135.15 ms
 unchanged rebuild, 4,335,592 B binary, and 1.256 ms process wall time. These are
 different programs and dependency graphs, so their cross-phase deltas are not a
 valid performance comparison. Phase 1's apples-to-apples result is Pico versus
 plain Rust: +36.78 ms clean build, +1.67 ms unchanged rebuild, and 0 B binary
-size difference. See [Phase 2 method and raw samples](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase2.md)
+size difference. Earlier Phase 2 runs measured unqualified paths at 5/12/31 ns
+and then 7/11/27 ns for unique/two/eight providers. The latest run is 8/12/29 ns;
+qualified paths are 6/27 ns for one/eight providers. Optional absence/one
+provider is 6/3 ns; collecting all providers takes 17/40 ns for two/eight. The
+resolver and harness changed between runs, so these are snapshots rather than
+isolated feature comparisons. Many-provider timing includes an allocated output
+vector. The first five-run example build was 416.90 ms clean / 40.37 ms unchanged,
+4,365,760 B, and 1.516 ms process wall; the current version is +50.53 ms / +0.12
+ms, -7,872 B, and -0.063 ms respectively. This is a source-version comparison,
+not a causal attribution to the features. Raw samples and method are in the
+[Phase 2 evidence](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase2.md)
 and [Phase 1 comparison](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase1.md).
 
 The capability prototype tests missing, ambiguous, and explicitly selected
@@ -67,9 +81,11 @@ median costs:
 | Path | Median per resolution |
 | --- | ---: |
 | Direct typed access | 2 ns |
-| One provision | 5 ns |
-| Explicit selection from two | 12 ns |
-| Explicit selection from eight | 31 ns |
+| One provision (latest run) | 8 ns |
+| Explicit selection from two (latest run) | 12 ns |
+| Explicit selection from eight (latest run) | 29 ns |
+| Qualified one provision | 5 ns |
+| Qualified explicit selection from eight | 27 ns |
 
 These are nine-sample microbenchmark medians over a fixed clock, not end-to-end
 application latency guarantees. Build, binary, and process observations plus
