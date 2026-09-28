@@ -15,6 +15,10 @@ rustclamp-core = { version = "0.1.0", path = "../core" }
 name = "resolution"
 harness = false
 
+[[bench]]
+name = "process_projection"
+harness = false
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"

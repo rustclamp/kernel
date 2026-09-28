@@ -3,15 +3,1117 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
 
 use rustclamp_core::{
-    Capability, CapabilityId, Contribution, ContributionId, ContributionTarget,
-    ContributionTargetId, Module, ModuleId, Provides, Qualifier, QualifierId, Requires,
+    ApplicationId, Capability, CapabilityId, Contribution, ContributionId, ContributionTarget,
+    ContributionTargetId, ExecutionId, Module, ModuleId, ProcessId, Provides, Qualifier,
+    QualifierId, Requires,
 };
+
+/// A caller-owned application blueprint containing process roots and module relations.
+///
+/// The blueprint describes declarations only. [`ApplicationBlueprint::project`]
+/// derives the reachable module set for one process without constructing modules.
+pub struct ApplicationBlueprint {
+    application: ApplicationId,
+    modules: BTreeSet<ModuleId>,
+    executions: BTreeMap<ExecutionId, ModuleId>,
+    processes: BTreeMap<ProcessId, Vec<ExecutionId>>,
+    providers: Vec<(ModuleId, CapabilityId, Option<QualifierId>)>,
+    requirements: Vec<(ModuleId, CapabilityId, Option<QualifierId>, bool)>,
+    selections: Vec<(ModuleId, CapabilityId, Option<QualifierId>, ModuleId)>,
+    defaults: Vec<(ModuleId, CapabilityId, Option<QualifierId>, ModuleId)>,
+    replacements: Vec<(CapabilityId, Option<QualifierId>, ModuleId, ModuleId)>,
+    exclusions: BTreeSet<ModuleId>,
+    target_consumptions: Vec<(ModuleId, ContributionTargetId, QualifierId)>,
+    contributions: Vec<(
+        ModuleId,
+        ContributionTargetId,
+        QualifierId,
+        ContributionId,
+        bool,
+    )>,
+}
+
+impl ApplicationBlueprint {
+    /// Creates an empty architecture blueprint with a stable identity.
+    pub fn new(application: ApplicationId) -> Self {
+        Self {
+            application,
+            modules: BTreeSet::new(),
+            executions: BTreeMap::new(),
+            processes: BTreeMap::new(),
+            providers: Vec::new(),
+            requirements: Vec::new(),
+            selections: Vec::new(),
+            defaults: Vec::new(),
+            replacements: Vec::new(),
+            exclusions: BTreeSet::new(),
+            target_consumptions: Vec::new(),
+            contributions: Vec::new(),
+        }
+    }
+
+    /// Declares a module that may be included in one or more process projections.
+    pub fn add_module(&mut self, module: ModuleId) -> &mut Self {
+        self.modules.insert(module);
+        self
+    }
+
+    /// Declares an execution root implemented by a module.
+    pub fn add_execution(&mut self, execution: ExecutionId, module: ModuleId) -> &mut Self {
+        self.executions.insert(execution, module);
+        self
+    }
+
+    /// Declares one or more execution roots for a runnable process projection.
+    pub fn add_process(&mut self, process: ProcessId, roots: Vec<ExecutionId>) -> &mut Self {
+        self.processes.insert(process, roots);
+        self
+    }
+
+    /// Connects a module requirement to its already selected capability provider.
+    pub fn require_provider(
+        &mut self,
+        consumer: ModuleId,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+        provider: ModuleId,
+    ) -> &mut Self {
+        self.provide_capability(provider, capability, qualifier)
+            .require_capability(consumer, capability, qualifier, false)
+            .select_provider(consumer, capability, qualifier, provider);
+        self
+    }
+
+    /// Declares that a module provides a capability for an optional qualifier.
+    pub fn provide_capability(
+        &mut self,
+        module: ModuleId,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+    ) -> &mut Self {
+        self.providers.push((module, capability, qualifier));
+        self
+    }
+
+    /// Declares a capability requirement. Optional requirements do not activate a provider.
+    pub fn require_capability(
+        &mut self,
+        consumer: ModuleId,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+        optional: bool,
+    ) -> &mut Self {
+        self.requirements
+            .push((consumer, capability, qualifier, optional));
+        self
+    }
+
+    /// Selects a provider for one module requirement.
+    pub fn select_provider(
+        &mut self,
+        consumer: ModuleId,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+        provider: ModuleId,
+    ) -> &mut Self {
+        self.selections
+            .push((consumer, capability, qualifier, provider));
+        self
+    }
+
+    /// Declares a default provider for one module requirement.
+    pub fn default_provider(
+        &mut self,
+        consumer: ModuleId,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+        provider: ModuleId,
+    ) -> &mut Self {
+        self.defaults
+            .push((consumer, capability, qualifier, provider));
+        self
+    }
+
+    /// Replaces one provider with another for a capability and qualifier.
+    pub fn replace_provider(
+        &mut self,
+        capability: CapabilityId,
+        qualifier: Option<QualifierId>,
+        replaced: ModuleId,
+        replacement: ModuleId,
+    ) -> &mut Self {
+        self.replacements
+            .push((capability, qualifier, replaced, replacement));
+        self
+    }
+
+    /// Excludes a module from provider selection and process reachability.
+    pub fn exclude_module(&mut self, module: ModuleId) -> &mut Self {
+        self.exclusions.insert(module);
+        self
+    }
+
+    /// Declares that a module consumes a qualified contribution target.
+    pub fn consume_target(
+        &mut self,
+        consumer: ModuleId,
+        target: ContributionTargetId,
+        qualifier: QualifierId,
+    ) -> &mut Self {
+        self.target_consumptions.push((consumer, target, qualifier));
+        self
+    }
+
+    /// Declares that a module contributes to a qualified target.
+    pub fn add_contribution(
+        &mut self,
+        contributor: ModuleId,
+        target: ContributionTargetId,
+        qualifier: QualifierId,
+        contribution: ContributionId,
+    ) -> &mut Self {
+        self.contributions
+            .push((contributor, target, qualifier, contribution, true));
+        self
+    }
+
+    /// Declares an optional contribution that may be discarded without a target.
+    pub fn add_optional_contribution(
+        &mut self,
+        contributor: ModuleId,
+        target: ContributionTargetId,
+        qualifier: QualifierId,
+        contribution: ContributionId,
+    ) -> &mut Self {
+        self.contributions
+            .push((contributor, target, qualifier, contribution, false));
+        self
+    }
+
+    /// Derives the reachable module projection from a process's execution roots.
+    pub fn project(&self, process: ProcessId) -> Result<ProcessProjection, ProjectionError> {
+        let application = self.application;
+        let mut providers_by_capability =
+            BTreeMap::<(CapabilityId, Option<QualifierId>), Vec<ModuleId>>::new();
+        for (module, capability, qualifier) in &self.providers {
+            providers_by_capability
+                .entry((*capability, *qualifier))
+                .or_default()
+                .push(*module);
+        }
+        for providers in providers_by_capability.values_mut() {
+            providers.sort_unstable();
+            providers.dedup();
+        }
+        let mut requirements_by_owner =
+            BTreeMap::<ModuleId, Vec<(CapabilityId, Option<QualifierId>, bool)>>::new();
+        for (consumer, capability, qualifier, optional) in &self.requirements {
+            requirements_by_owner.entry(*consumer).or_default().push((
+                *capability,
+                *qualifier,
+                *optional,
+            ));
+        }
+        let mut selections = BTreeMap::new();
+        for (consumer, capability, qualifier, provider) in &self.selections {
+            selections
+                .entry((*consumer, *capability, *qualifier))
+                .or_insert(*provider);
+        }
+        let mut defaults =
+            BTreeMap::<(ModuleId, CapabilityId, Option<QualifierId>), Vec<ModuleId>>::new();
+        for (consumer, capability, qualifier, provider) in &self.defaults {
+            defaults
+                .entry((*consumer, *capability, *qualifier))
+                .or_default()
+                .push(*provider);
+        }
+        for providers in defaults.values_mut() {
+            providers.sort_unstable();
+            providers.dedup();
+        }
+        let mut targets_by_owner =
+            BTreeMap::<ModuleId, Vec<(ContributionTargetId, QualifierId)>>::new();
+        let mut consumers_by_target =
+            BTreeMap::<(ContributionTargetId, QualifierId), Vec<ModuleId>>::new();
+        for (consumer, target, qualifier) in &self.target_consumptions {
+            targets_by_owner
+                .entry(*consumer)
+                .or_default()
+                .push((*target, *qualifier));
+            consumers_by_target
+                .entry((*target, *qualifier))
+                .or_default()
+                .push(*consumer);
+        }
+        let mut contributions_by_target =
+            BTreeMap::<(ContributionTargetId, QualifierId), Vec<(ModuleId, ContributionId)>>::new();
+        for (contributor, target, qualifier, contribution, _) in &self.contributions {
+            contributions_by_target
+                .entry((*target, *qualifier))
+                .or_default()
+                .push((*contributor, *contribution));
+        }
+        let replacements = self
+            .replacements
+            .iter()
+            .map(|(capability, qualifier, old, new)| ((*capability, *qualifier, *old), *new))
+            .collect::<BTreeMap<_, _>>();
+        let replacement_sources = self
+            .replacements
+            .iter()
+            .map(|(capability, qualifier, old, new)| ((*capability, *qualifier, *new), *old))
+            .collect::<BTreeMap<_, _>>();
+        let roots = self
+            .processes
+            .get(&process)
+            .ok_or(ProjectionError::MissingProcess {
+                application,
+                process,
+            })?;
+        if roots.is_empty() {
+            return Err(ProjectionError::EmptyProcessRoots {
+                application,
+                process,
+            });
+        }
+        let mut roots = roots.clone();
+        roots.sort_unstable();
+
+        let mut pending = VecDeque::new();
+        let mut reached = BTreeMap::<ModuleId, IncludedModule>::new();
+        let mut edges = Vec::<(ModuleId, ModuleId)>::new();
+        let mut resolved_requirements = Vec::new();
+        let mut resolved_contributions = Vec::new();
+        for execution in &roots {
+            let module = self.executions.get(execution).copied().ok_or(
+                ProjectionError::MissingExecution {
+                    application,
+                    process,
+                    execution: *execution,
+                },
+            )?;
+            self.ensure_module(application, process, module)?;
+            if self.exclusions.contains(&module) {
+                return Err(ProjectionError::ExcludedRoot {
+                    application,
+                    process,
+                    module,
+                });
+            }
+            if let std::collections::btree_map::Entry::Vacant(entry) = reached.entry(module) {
+                entry.insert(IncludedModule {
+                    module,
+                    path: vec![module],
+                    reason: InclusionReason::ExecutionRoot {
+                        execution: *execution,
+                    },
+                });
+                pending.push_back(module);
+            }
+        }
+
+        while let Some(consumer) = pending.pop_front() {
+            let mut next = Vec::<(ModuleId, InclusionReason)>::new();
+            for (capability, qualifier, optional) in
+                requirements_by_owner.get(&consumer).into_iter().flatten()
+            {
+                let requirement_key = (consumer, *capability, *qualifier);
+                let explicit = selections.get(&requirement_key).copied();
+                let defaults = defaults.get(&requirement_key).cloned().unwrap_or_default();
+                if explicit.is_none() && defaults.len() > 1 {
+                    return Err(ProjectionError::AmbiguousProvider {
+                        application,
+                        process,
+                        required_by: consumer,
+                        capability: *capability,
+                        qualifier: *qualifier,
+                        candidates: defaults,
+                    });
+                }
+                let selection = if explicit.is_some() {
+                    ProviderSelection::Explicit
+                } else if !defaults.is_empty() {
+                    ProviderSelection::Default
+                } else {
+                    ProviderSelection::Unique
+                };
+                let selected = explicit.or_else(|| defaults.first().copied());
+                let mut candidates = providers_by_capability
+                    .get(&(*capability, *qualifier))
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(chosen) = selected {
+                    let provider = replacements
+                        .get(&(*capability, *qualifier, chosen))
+                        .copied()
+                        .unwrap_or(chosen);
+                    if self.exclusions.contains(&provider) {
+                        return Err(ProjectionError::ExcludedProvider {
+                            application,
+                            process,
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            provider,
+                        });
+                    }
+                    if (!candidates.contains(&chosen) && !candidates.contains(&provider))
+                        || !providers_by_capability
+                            .get(&(*capability, *qualifier))
+                            .is_some_and(|providers| providers.contains(&provider))
+                    {
+                        return Err(ProjectionError::UnavailableProvider {
+                            application,
+                            process,
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            provider,
+                        });
+                    }
+                    next.push((
+                        provider,
+                        InclusionReason::CapabilityProvider {
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            selection,
+                            replaced: (provider != chosen).then_some(chosen),
+                        },
+                    ));
+                    resolved_requirements.push(ResolvedRequirement {
+                        consumer,
+                        capability: *capability,
+                        qualifier: *qualifier,
+                        provider: Some(provider),
+                        optional: *optional,
+                        selection,
+                        replaced: (provider != chosen).then_some(chosen),
+                    });
+                    continue;
+                }
+                if *optional {
+                    resolved_requirements.push(ResolvedRequirement {
+                        consumer,
+                        capability: *capability,
+                        qualifier: *qualifier,
+                        provider: None,
+                        optional: true,
+                        selection: ProviderSelection::OptionalAbsent,
+                        replaced: None,
+                    });
+                    continue;
+                }
+                for candidate in &mut candidates {
+                    *candidate = replacements
+                        .get(&(*capability, *qualifier, *candidate))
+                        .copied()
+                        .unwrap_or(*candidate);
+                }
+                if let Some(provider) = candidates.iter().find(|candidate| {
+                    !providers_by_capability
+                        .get(&(*capability, *qualifier))
+                        .is_some_and(|providers| providers.contains(candidate))
+                }) {
+                    return Err(ProjectionError::UnavailableProvider {
+                        application,
+                        process,
+                        required_by: consumer,
+                        capability: *capability,
+                        qualifier: *qualifier,
+                        provider: *provider,
+                    });
+                }
+                candidates.retain(|module| {
+                    providers_by_capability
+                        .get(&(*capability, *qualifier))
+                        .is_some_and(|providers| providers.contains(module))
+                });
+                candidates.retain(|module| !self.exclusions.contains(module));
+                candidates.sort_unstable();
+                candidates.dedup();
+                match candidates.as_slice() {
+                    [] if providers_by_capability.contains_key(&(*capability, *qualifier)) => {
+                        let provider = providers_by_capability[&(*capability, *qualifier)][0];
+                        return Err(ProjectionError::ExcludedProvider {
+                            application,
+                            process,
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            provider,
+                        });
+                    }
+                    [] => {
+                        return Err(ProjectionError::MissingProvider {
+                            application,
+                            process,
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                        });
+                    }
+                    [provider] => {
+                        let replaced = replacement_sources
+                            .get(&(*capability, *qualifier, *provider))
+                            .copied();
+                        next.push((
+                            *provider,
+                            InclusionReason::CapabilityProvider {
+                                required_by: consumer,
+                                capability: *capability,
+                                qualifier: *qualifier,
+                                selection: ProviderSelection::Unique,
+                                replaced,
+                            },
+                        ));
+                        resolved_requirements.push(ResolvedRequirement {
+                            consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            provider: Some(*provider),
+                            optional: false,
+                            selection: ProviderSelection::Unique,
+                            replaced,
+                        });
+                    }
+                    _ => {
+                        return Err(ProjectionError::AmbiguousProvider {
+                            application,
+                            process,
+                            required_by: consumer,
+                            capability: *capability,
+                            qualifier: *qualifier,
+                            candidates,
+                        });
+                    }
+                }
+            }
+            for (target, qualifier) in targets_by_owner.get(&consumer).into_iter().flatten() {
+                for (contributor, contribution) in contributions_by_target
+                    .get(&(*target, *qualifier))
+                    .into_iter()
+                    .flatten()
+                {
+                    resolved_contributions.push(ResolvedContribution {
+                        consumer,
+                        contributor: *contributor,
+                        target: *target,
+                        qualifier: *qualifier,
+                        contribution: *contribution,
+                    });
+                    next.push((
+                        *contributor,
+                        InclusionReason::Contribution {
+                            consumed_by: consumer,
+                            target: *target,
+                            qualifier: *qualifier,
+                            contribution: *contribution,
+                        },
+                    ));
+                }
+            }
+            next.sort_unstable();
+
+            for (module, reason) in next {
+                if self.exclusions.contains(&module) {
+                    continue;
+                }
+                self.ensure_module(application, process, module)?;
+                edges.push((consumer, module));
+                if reached.contains_key(&module) {
+                    continue;
+                }
+                let mut path = reached[&consumer].path.clone();
+                path.push(module);
+                reached.insert(
+                    module,
+                    IncludedModule {
+                        module,
+                        path,
+                        reason,
+                    },
+                );
+                pending.push_back(module);
+            }
+        }
+
+        if let Some(path) = find_cycle(&edges) {
+            return Err(ProjectionError::DependencyCycle {
+                application,
+                process,
+                path,
+            });
+        }
+
+        let included_set = reached.keys().copied().collect::<BTreeSet<_>>();
+        for (contributor, target, qualifier, contribution, required) in &self.contributions {
+            if *required && included_set.contains(contributor) {
+                let consumed =
+                    consumers_by_target
+                        .get(&(*target, *qualifier))
+                        .is_some_and(|consumers| {
+                            consumers
+                                .iter()
+                                .any(|consumer| included_set.contains(consumer))
+                        });
+                if !consumed {
+                    return Err(ProjectionError::OrphanContribution {
+                        application,
+                        process,
+                        contributor: *contributor,
+                        target: *target,
+                        qualifier: *qualifier,
+                        contribution: *contribution,
+                    });
+                }
+            }
+        }
+
+        let included_modules = reached.into_values().collect::<Vec<_>>();
+        let included_set = included_modules
+            .iter()
+            .map(|entry| entry.module)
+            .collect::<BTreeSet<_>>();
+        let excluded_modules = self.modules.difference(&included_set).copied().collect();
+        let exclusions = self
+            .modules
+            .difference(&included_set)
+            .map(|module| ExcludedModule {
+                module: *module,
+                reason: if self.exclusions.contains(module) {
+                    ExclusionReason::Explicit
+                } else {
+                    ExclusionReason::Unreachable
+                },
+            })
+            .collect();
+
+        resolved_requirements.sort_unstable();
+        resolved_contributions.sort_unstable();
+
+        Ok(ProcessProjection {
+            application,
+            process,
+            roots,
+            included_modules,
+            excluded_modules,
+            exclusions,
+            requirements: resolved_requirements,
+            contributions: resolved_contributions,
+        })
+    }
+
+    /// Resolves one process and consumes the mutable blueprint at the freeze boundary.
+    pub fn freeze(self, process: ProcessId) -> Result<FrozenProcess, ProjectionError> {
+        Ok(self.freeze_processes(&[process])?.remove(0))
+    }
+
+    /// Resolves selected processes from one blueprint and consumes it at freeze.
+    pub fn freeze_processes(
+        self,
+        processes: &[ProcessId],
+    ) -> Result<Vec<FrozenProcess>, ProjectionError> {
+        processes
+            .iter()
+            .map(|process| self.project(*process).map(FrozenProcess::new))
+            .collect()
+    }
+
+    fn ensure_module(
+        &self,
+        application: ApplicationId,
+        process: ProcessId,
+        module: ModuleId,
+    ) -> Result<(), ProjectionError> {
+        if self.modules.contains(&module) {
+            Ok(())
+        } else {
+            Err(ProjectionError::MissingModule {
+                application,
+                process,
+                module,
+            })
+        }
+    }
+}
+
+fn find_cycle(edges: &[(ModuleId, ModuleId)]) -> Option<Vec<ModuleId>> {
+    fn visit(
+        node: ModuleId,
+        graph: &BTreeMap<ModuleId, Vec<ModuleId>>,
+        active: &mut Vec<ModuleId>,
+        complete: &mut BTreeSet<ModuleId>,
+    ) -> Option<Vec<ModuleId>> {
+        if let Some(start) = active.iter().position(|candidate| *candidate == node) {
+            let mut cycle = active[start..].to_vec();
+            cycle.push(node);
+            return Some(cycle);
+        }
+        if !complete.insert(node) {
+            return None;
+        }
+        active.push(node);
+        for next in graph.get(&node).into_iter().flatten() {
+            if let Some(cycle) = visit(*next, graph, active, complete) {
+                return Some(cycle);
+            }
+        }
+        active.pop();
+        None
+    }
+
+    let mut graph = BTreeMap::<ModuleId, Vec<ModuleId>>::new();
+    for (from, to) in edges {
+        graph.entry(*from).or_default().push(*to);
+    }
+    for neighbors in graph.values_mut() {
+        neighbors.sort_unstable();
+        neighbors.dedup();
+    }
+    let mut complete = BTreeSet::new();
+    let mut active = Vec::new();
+    for node in graph.keys().copied() {
+        if let Some(cycle) = visit(node, &graph, &mut active, &mut complete) {
+            return Some(cycle);
+        }
+    }
+    None
+}
+
+/// Why a module is included in a process projection.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum InclusionReason {
+    /// The module provides an execution root of the process.
+    ExecutionRoot {
+        /// The execution represented by the root.
+        execution: ExecutionId,
+    },
+    /// The module provides a capability required by an included consumer.
+    CapabilityProvider {
+        /// The module requiring this provider.
+        required_by: ModuleId,
+        /// The required capability identity.
+        capability: CapabilityId,
+        /// The capability qualifier, if present.
+        qualifier: Option<QualifierId>,
+        /// How this provider was selected.
+        selection: ProviderSelection,
+        /// The original provider when this one replaced it.
+        replaced: Option<ModuleId>,
+    },
+    /// The module contributes to a target consumed by an included module.
+    Contribution {
+        /// The module consuming the target.
+        consumed_by: ModuleId,
+        /// The consumed target identity.
+        target: ContributionTargetId,
+        /// The target qualifier.
+        qualifier: QualifierId,
+        /// The contribution kind identity.
+        contribution: ContributionId,
+    },
+}
+
+/// How a resolved provider was selected for a requirement.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ProviderSelection {
+    /// One provider uniquely matched the requirement.
+    Unique,
+    /// A declared default selected the provider.
+    Default,
+    /// An explicit selection overrode defaults or automatic choice.
+    Explicit,
+    /// The optional requirement was not activated.
+    OptionalAbsent,
+}
+
+/// Why a declared module is absent from a process projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExclusionReason {
+    /// The blueprint explicitly excluded the module.
+    Explicit,
+    /// No selected root or relation reached the module.
+    Unreachable,
+}
+
+/// An omitted module and its projection-specific exclusion reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExcludedModule {
+    module: ModuleId,
+    reason: ExclusionReason,
+}
+
+impl ExcludedModule {
+    /// Returns the omitted module identity.
+    pub const fn module(&self) -> ModuleId {
+        self.module
+    }
+
+    /// Returns why the module is absent.
+    pub const fn reason(&self) -> ExclusionReason {
+        self.reason
+    }
+}
+
+/// A capability requirement and its selected provider in a process projection.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ResolvedRequirement {
+    consumer: ModuleId,
+    capability: CapabilityId,
+    qualifier: Option<QualifierId>,
+    provider: Option<ModuleId>,
+    optional: bool,
+    selection: ProviderSelection,
+    replaced: Option<ModuleId>,
+}
+
+impl ResolvedRequirement {
+    /// Returns the module that owns the requirement.
+    pub const fn consumer(&self) -> ModuleId {
+        self.consumer
+    }
+    /// Returns the required capability identity.
+    pub const fn capability(&self) -> CapabilityId {
+        self.capability
+    }
+    /// Returns the required qualifier, if any.
+    pub const fn qualifier(&self) -> Option<QualifierId> {
+        self.qualifier
+    }
+    /// Returns the selected provider, or `None` for an inactive optional requirement.
+    pub const fn provider(&self) -> Option<ModuleId> {
+        self.provider
+    }
+    /// Returns whether the declared requirement is optional.
+    pub const fn optional(&self) -> bool {
+        self.optional
+    }
+    /// Returns how the provider was selected.
+    pub const fn selection(&self) -> ProviderSelection {
+        self.selection
+    }
+    /// Returns the provider identity replaced by the selected provider, if any.
+    pub const fn replaced_provider(&self) -> Option<ModuleId> {
+        self.replaced
+    }
+}
+
+/// A matching target contribution in the selected process projection.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ResolvedContribution {
+    consumer: ModuleId,
+    contributor: ModuleId,
+    target: ContributionTargetId,
+    qualifier: QualifierId,
+    contribution: ContributionId,
+}
+
+impl ResolvedContribution {
+    /// Returns the module consuming the target.
+    pub const fn consumer(&self) -> ModuleId {
+        self.consumer
+    }
+    /// Returns the contributing module.
+    pub const fn contributor(&self) -> ModuleId {
+        self.contributor
+    }
+    /// Returns the target identity.
+    pub const fn target(&self) -> ContributionTargetId {
+        self.target
+    }
+    /// Returns the target qualifier.
+    pub const fn qualifier(&self) -> QualifierId {
+        self.qualifier
+    }
+    /// Returns the contribution kind identity.
+    pub const fn contribution(&self) -> ContributionId {
+        self.contribution
+    }
+}
+
+/// One reachable module and the deterministic path that made it reachable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IncludedModule {
+    module: ModuleId,
+    path: Vec<ModuleId>,
+    reason: InclusionReason,
+}
+
+impl IncludedModule {
+    /// Returns the included module identity.
+    pub const fn module(&self) -> ModuleId {
+        self.module
+    }
+
+    /// Returns the root-to-module inclusion path.
+    pub fn path(&self) -> &[ModuleId] {
+        &self.path
+    }
+
+    /// Returns the edge that included this module or the root execution.
+    pub const fn reason(&self) -> InclusionReason {
+        self.reason
+    }
+}
+
+/// A derived process projection. Its private structure cannot be mutated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessProjection {
+    application: ApplicationId,
+    process: ProcessId,
+    roots: Vec<ExecutionId>,
+    included_modules: Vec<IncludedModule>,
+    excluded_modules: Vec<ModuleId>,
+    exclusions: Vec<ExcludedModule>,
+    requirements: Vec<ResolvedRequirement>,
+    contributions: Vec<ResolvedContribution>,
+}
+
+impl ProcessProjection {
+    /// Returns the application blueprint identity.
+    pub const fn application(&self) -> ApplicationId {
+        self.application
+    }
+
+    /// Returns the selected process identity.
+    pub const fn process(&self) -> ProcessId {
+        self.process
+    }
+
+    /// Returns the process's execution roots.
+    pub fn roots(&self) -> &[ExecutionId] {
+        &self.roots
+    }
+
+    /// Returns reachable modules with provenance paths.
+    pub fn included_modules(&self) -> &[IncludedModule] {
+        &self.included_modules
+    }
+
+    /// Returns declared modules excluded from this process projection.
+    pub fn excluded_modules(&self) -> &[ModuleId] {
+        &self.excluded_modules
+    }
+
+    /// Returns omitted modules with their exclusion reasons.
+    pub fn exclusions(&self) -> &[ExcludedModule] {
+        &self.exclusions
+    }
+
+    /// Returns requirements resolved for included modules.
+    pub fn requirements(&self) -> &[ResolvedRequirement] {
+        &self.requirements
+    }
+
+    /// Returns consumed contributions in this process projection.
+    pub fn contributions(&self) -> &[ResolvedContribution] {
+        &self.contributions
+    }
+
+    /// Returns whether a module is reachable in this projection.
+    pub fn includes(&self, module: ModuleId) -> bool {
+        self.included_modules
+            .iter()
+            .any(|entry| entry.module == module)
+    }
+}
+
+/// Compact structural input for initializing a selected runtime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeProjection {
+    modules: Vec<ModuleId>,
+    contributions: Vec<ResolvedContribution>,
+}
+
+impl RuntimeProjection {
+    /// Returns the selected module identities in deterministic order.
+    pub fn modules(&self) -> &[ModuleId] {
+        &self.modules
+    }
+
+    /// Returns target contribution work assigned to the consuming modules.
+    pub fn contributions(&self) -> &[ResolvedContribution] {
+        &self.contributions
+    }
+}
+
+/// A structurally immutable projection produced at the composition freeze boundary.
+///
+/// ```compile_fail
+/// use rustclamp_core::ModuleId;
+/// use rustclamp_kernel::FrozenProcess;
+/// fn mutate(frozen: &mut FrozenProcess) {
+///     frozen.add_module(ModuleId::new("late.module"));
+/// }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrozenProcess {
+    runtime: RuntimeProjection,
+    inspection: ProcessProjection,
+}
+
+impl FrozenProcess {
+    fn new(inspection: ProcessProjection) -> Self {
+        let runtime = RuntimeProjection {
+            modules: inspection
+                .included_modules()
+                .iter()
+                .map(IncludedModule::module)
+                .collect(),
+            contributions: inspection.contributions.clone(),
+        };
+        Self {
+            runtime,
+            inspection,
+        }
+    }
+
+    /// Returns the compact runtime projection derived from the resolved model.
+    pub const fn runtime(&self) -> &RuntimeProjection {
+        &self.runtime
+    }
+
+    /// Returns immutable resolution metadata for inspection.
+    pub const fn inspection(&self) -> &ProcessProjection {
+        &self.inspection
+    }
+}
+
+/// A structured failure while deriving a selected process projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProjectionError {
+    /// The application has no declaration for the requested process.
+    MissingProcess {
+        /// The application identity.
+        application: ApplicationId,
+        /// The requested process identity.
+        process: ProcessId,
+    },
+    /// The process is declared without an execution root.
+    EmptyProcessRoots {
+        /// The application identity.
+        application: ApplicationId,
+        /// The process identity with no roots.
+        process: ProcessId,
+    },
+    /// A process root refers to an undeclared execution.
+    MissingExecution {
+        /// The application identity.
+        application: ApplicationId,
+        /// The selected process identity.
+        process: ProcessId,
+        /// The undeclared root execution.
+        execution: ExecutionId,
+    },
+    /// A root or reachable edge refers to an undeclared module.
+    MissingModule {
+        /// The application identity.
+        application: ApplicationId,
+        /// The selected process identity.
+        process: ProcessId,
+        /// The undeclared module identity.
+        module: ModuleId,
+    },
+    /// An included required capability has no provider.
+    MissingProvider {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Requiring module.
+        required_by: ModuleId,
+        /// Required capability.
+        capability: CapabilityId,
+        /// Required qualifier, if any.
+        qualifier: Option<QualifierId>,
+    },
+    /// An included requirement has multiple providers without an explicit selection.
+    AmbiguousProvider {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Requiring module.
+        required_by: ModuleId,
+        /// Required capability.
+        capability: CapabilityId,
+        /// Required qualifier, if any.
+        qualifier: Option<QualifierId>,
+        /// Sorted matching provider modules.
+        candidates: Vec<ModuleId>,
+    },
+    /// A selected provider is not declared for the requirement.
+    UnavailableProvider {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Requiring module.
+        required_by: ModuleId,
+        /// Required capability.
+        capability: CapabilityId,
+        /// Required qualifier, if any.
+        qualifier: Option<QualifierId>,
+        /// Selected provider module.
+        provider: ModuleId,
+    },
+    /// An included requirement selected an excluded provider.
+    ExcludedProvider {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Requiring module.
+        required_by: ModuleId,
+        /// Required capability.
+        capability: CapabilityId,
+        /// Required qualifier, if any.
+        qualifier: Option<QualifierId>,
+        /// Excluded provider module.
+        provider: ModuleId,
+    },
+    /// An execution root was explicitly excluded.
+    ExcludedRoot {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Excluded root module.
+        module: ModuleId,
+    },
+    /// A cycle exists in the selected process dependency graph.
+    DependencyCycle {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Closed cycle path, with the first module repeated at the end.
+        path: Vec<ModuleId>,
+    },
+    /// A reachable module declares a required contribution without a consumer.
+    OrphanContribution {
+        /// Application identity.
+        application: ApplicationId,
+        /// Projected process identity.
+        process: ProcessId,
+        /// Module declaring the contribution.
+        contributor: ModuleId,
+        /// Contribution target identity.
+        target: ContributionTargetId,
+        /// Contribution target qualifier.
+        qualifier: QualifierId,
+        /// Contribution kind identity.
+        contribution: ContributionId,
+    },
+}
 
 /// Caller-owned declarations for one typed contribution target and qualifier.
 pub struct TargetComposition<T: ContributionTarget, Q: Qualifier> {

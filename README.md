@@ -6,11 +6,14 @@ The **Kernel component of RustClamp**, the framework in the
 [`rustclamp`](https://github.com/rustclamp/rustclamp) repository. Kernel is
 responsible for composition, capability resolution, and process validation.
 
-This is a companion package, not a standalone framework. It currently resolves
-one typed capability at a time; application-wide modules and process composition
-are not implemented. It depends only on Core and builds with Rust 1.96.1.
-Publishing is disabled until licensing, registry ownership and the prototype API
-have been reviewed.
+This is a companion package, not a standalone framework. It provides typed
+capability resolution and a process-projection prototype over a caller-owned
+application blueprint. Projection resolution includes providers, defaults,
+explicit choices, replacements, exclusions, and qualified contributions;
+`freeze` consumes the blueprint and returns separate runtime and inspection
+views. It depends only on Core and builds with Rust 1.96.1. Publishing is
+disabled until licensing, registry ownership and the prototype API have been
+reviewed.
 
 The planned composition path is module declarations, capability resolution,
 domain-owned contribution targets, process reachability, validation, freeze,
@@ -31,9 +34,9 @@ flowchart LR
 | --- | --- |
 | External Rust dependencies | 0 |
 | Internal dependencies | Core only |
-| Public composition behavior | Additive module declarations, typed resolution/cardinality, construction-cycle validation, and generic contribution-target assembly |
+| Public composition behavior | Typed resolution/cardinality, construction-cycle validation, contribution assembly, process-root reachability, provider selection/replacement, projection-scoped validation, and consuming freeze prototype |
 | Tokio, HTTP, or database dependency | None |
-| Behavioral architecture fixtures | One CLI contribution-target example |
+| Behavioral architecture fixtures | CLI contribution target and CLI/Worker process-projection examples |
 
 ## Phase 2 Measurements
 
@@ -109,8 +112,9 @@ active composition. A missing target with no required declarations is a no-op.
 The target owns domain conflicts, ordering, empty-input behavior, and the
 runtime representation; Kernel knows no command, route, schedule, or migration
 rules. The qualifier is carried in the Rust type, so contribution types for
-different interfaces cannot be mixed accidentally. This is not yet process
-projection: declarations outside a selected process are still a Phase 4 case.
+different interfaces cannot be mixed accidentally. Process-aware reachability,
+resolution, and freezing are demonstrated as an in-memory Phase 4 prototype;
+normal runtime construction and lifecycle coordination remain unfinished.
 
 The Phase 3 CLI fixture measures target assembly at 86 ns per two-command
 build (nine-sample median) and reports 96 bytes of runtime tree storage. It
@@ -118,6 +122,17 @@ adds no internal dependency beyond Core and Kernel. This is a synthetic
 microbenchmark; allocation calls are not instrumented, and Phase 2 build
 numbers are not a fair before/after comparison. See the
 [Phase 3 evidence](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase3.md).
+
+`ApplicationBlueprint` records execution roots, modules, capability providers
+and requirements, selection defaults, replacements, exclusions, target
+consumers, and contributions. `project(ProcessId)` resolves only reachable
+declarations and returns process-aware errors, inclusion paths, relation views,
+and exclusion reasons. `freeze(ProcessId)` consumes the blueprint and creates a
+compact runtime plan plus immutable inspection metadata. The process example
+validates Worker-only configuration and callback isolation. This remains a
+prototype; automatic construction and full lifecycle management are out of
+scope. Measurements and limits are in the
+[Phase 4 evidence](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase4.md).
 
 ```sh
 cargo fmt --all -- --check

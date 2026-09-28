@@ -11,6 +11,12 @@
   cycle paths.
 - Caller-owned typed contribution collections that delegate build semantics to
   Core's public contribution-target contract and report required orphans.
+- Caller-owned application blueprints that derive module reachability from
+  process execution roots, capability-provider links, and qualified targets.
+- Projection-scoped provider discovery/default selection, replacements,
+  exclusions, cycle/orphan diagnostics, and provenance for resolved edges.
+- Consuming process freeze into separate runtime and inspection views, with
+  selected requirements, contributions, inclusion paths, and exclusion reasons.
 - Adapters from additive Core module, requirement, and provision contracts to
   the typed resolver declarations.
 - Phase 0 package scaffold and development checks.
