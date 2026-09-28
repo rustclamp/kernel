@@ -35,6 +35,31 @@ flowchart LR
 | Tokio, HTTP, or database dependency | None |
 | Behavioral architecture fixtures | None yet |
 
+## Phase 2 Measurements
+
+Measured on Rust/Cargo 1.96.1, x86_64 Linux, AMD Ryzen 5 PRO 4650U, release
+profile. Resolver timings are nine-sample medians over fixed-clock operations;
+build measurements use five runs.
+
+| Metric | Result |
+| --- | ---: |
+| Direct typed access | 2 ns/op |
+| Resolve one provision | 5 ns/op |
+| Select from 2 provisions | 12 ns/op |
+| Select from 8 provisions | 31 ns/op |
+| Clean build median | 416.90 ms |
+| Unchanged rebuild median | 40.37 ms |
+| Example binary | 4,365,760 B |
+| Process wall-time median | 1.516 ms |
+
+For context, Phase 1's Pico example measured 269.18 ms clean build, 135.15 ms
+unchanged rebuild, 4,335,592 B binary, and 1.256 ms process wall time. These are
+different programs and dependency graphs, so their cross-phase deltas are not a
+valid performance comparison. Phase 1's apples-to-apples result is Pico versus
+plain Rust: +36.78 ms clean build, +1.67 ms unchanged rebuild, and 0 B binary
+size difference. See [Phase 2 method and raw samples](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase2.md)
+and [Phase 1 comparison](https://github.com/rustclamp/rustclamp/blob/main/docs/evidence/phase1.md).
+
 The capability prototype tests missing, ambiguous, and explicitly selected
 provisions. On the recorded host, the first in-process benchmark measured these
 median costs:
