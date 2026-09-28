@@ -3,7 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rustclamp_core::{
-    Capability, CapabilityId, Clock, ClockCapability, ModuleId, Qualifier, QualifierId,
+    Capability, CapabilityId, Clock, ClockCapability, Module, ModuleId, Provides, Qualifier,
+    QualifierId, Requires,
 };
 use rustclamp_kernel::{
     CapabilityComposition, CapabilityRequirement, CompositionError, CompositionErrorKind,
@@ -16,6 +17,8 @@ const FIXED_CLOCK: ModuleId = ModuleId::new("test.fixed-clock");
 const A: ModuleId = ModuleId::new("test.a");
 const B: ModuleId = ModuleId::new("test.b");
 const C: ModuleId = ModuleId::new("test.c");
+const DECLARED_CLOCK: ModuleId = ModuleId::new("test.declared-clock");
+const DECLARED_GREETER: ModuleId = ModuleId::new("test.declared-greeter");
 
 struct Primary;
 struct Simulation;
@@ -43,6 +46,28 @@ impl Clock for FixedClock {
     }
 }
 
+struct ClockModule(FixedClock);
+
+impl Module for ClockModule {
+    const ID: ModuleId = DECLARED_CLOCK;
+}
+
+impl Provides<ClockCapability> for ClockModule {
+    fn provided_value(&self) -> &(dyn Clock + 'static) {
+        &self.0 as &(dyn Clock + 'static)
+    }
+}
+
+struct GreeterModule;
+
+impl Module for GreeterModule {
+    const ID: ModuleId = DECLARED_GREETER;
+}
+
+impl Requires<ClockCapability> for GreeterModule {
+    const SELECTED_PROVIDER: Option<ModuleId> = Some(DECLARED_CLOCK);
+}
+
 #[test]
 fn one_provision_resolves_to_its_typed_value() {
     let clock = FixedClock(UNIX_EPOCH + Duration::from_secs(42));
@@ -52,6 +77,26 @@ fn one_provision_resolves_to_its_typed_value() {
     )];
 
     let resolved = Resolver::resolve::<ClockCapability>(GREETER, &provisions, None).unwrap();
+    assert_eq!(resolved.now(), UNIX_EPOCH + Duration::from_secs(42));
+}
+
+#[test]
+fn additive_module_contracts_discover_requirement_and_provider_declarations() {
+    let system = FixedClock(UNIX_EPOCH + Duration::from_secs(1));
+    let selected = ClockModule(FixedClock(UNIX_EPOCH + Duration::from_secs(42)));
+    let provisions = [
+        Provision::<ClockCapability>::new(SYSTEM_CLOCK, &system as &dyn Clock),
+        Provision::<ClockCapability>::from_module(&selected),
+    ];
+    let requirement = CapabilityRequirement::<ClockCapability>::from_module::<GreeterModule>();
+    let resolved = Resolver::resolve::<ClockCapability>(
+        requirement.required_by(),
+        &provisions,
+        requirement.selected_provider(),
+    )
+    .unwrap();
+
+    assert_eq!(requirement.required_by(), DECLARED_GREETER);
     assert_eq!(resolved.now(), UNIX_EPOCH + Duration::from_secs(42));
 }
 
@@ -306,6 +351,58 @@ fn replacing_one_provider_preserves_and_revalidates_consumer_requirements() {
             )
             .is_none()
     );
+}
+
+#[test]
+fn provider_replacement_and_clock_values_are_isolated_between_compositions() {
+    let first_original = FixedClock(UNIX_EPOCH + Duration::from_secs(1));
+    let first_replacement = FixedClock(UNIX_EPOCH + Duration::from_secs(42));
+    let second_clock = FixedClock(UNIX_EPOCH + Duration::from_secs(99));
+    let first_provider = ModuleId::new("test.first.clock");
+    let first_replacement_provider = ModuleId::new("test.first.replacement");
+    let second_provider = ModuleId::new("test.second.clock");
+    let first = CapabilityComposition::new(
+        vec![Provision::<ClockCapability>::new(
+            first_provider,
+            &first_original as &dyn Clock,
+        )],
+        vec![CapabilityRequirement::new(
+            ModuleId::new("test.first.greeter"),
+            Some(first_provider),
+        )],
+    );
+    let second = CapabilityComposition::new(
+        vec![Provision::<ClockCapability>::new(
+            second_provider,
+            &second_clock as &dyn Clock,
+        )],
+        vec![CapabilityRequirement::new(
+            ModuleId::new("test.second.greeter"),
+            Some(second_provider),
+        )],
+    );
+    let replaced_first = first
+        .replace_provider(
+            first_provider,
+            Provision::<ClockCapability>::new(
+                first_replacement_provider,
+                &first_replacement as &dyn Clock,
+            ),
+        )
+        .unwrap();
+
+    let resolved = |composition: &CapabilityComposition<'_, ClockCapability>| {
+        composition
+            .resolve_requirement(composition.requirements()[0])
+            .unwrap()
+            .now()
+    };
+    assert_eq!(resolved(&first), UNIX_EPOCH + Duration::from_secs(1));
+    assert_eq!(
+        resolved(&replaced_first),
+        UNIX_EPOCH + Duration::from_secs(42)
+    );
+    assert_eq!(resolved(&second), UNIX_EPOCH + Duration::from_secs(99));
 }
 
 #[test]

@@ -8,7 +8,9 @@ use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
 
-use rustclamp_core::{Capability, CapabilityId, ModuleId, Qualifier, QualifierId};
+use rustclamp_core::{
+    Capability, CapabilityId, Module, ModuleId, Provides, Qualifier, QualifierId, Requires,
+};
 
 /// A capability implementation associated with the module that supplies it.
 ///
@@ -23,6 +25,11 @@ impl<'a, C: Capability> Provision<'a, C> {
     /// Associates a module identity with a value implementing capability `C`.
     pub fn new(module: ModuleId, value: &'a C::Value) -> Self {
         Self { module, value }
+    }
+
+    /// Creates a provision from a module's additive [`Provides`] contract.
+    pub fn from_module<M: Provides<C>>(module: &'a M) -> Self {
+        Self::new(<M as Module>::ID, module.provided_value())
     }
 
     /// Returns the module identity associated with this provision.
@@ -61,9 +68,19 @@ impl<C: Capability> CapabilityRequirement<C> {
         }
     }
 
+    /// Creates a requirement from a module's additive [`Requires`] contract.
+    pub fn from_module<M: Requires<C>>() -> Self {
+        Self::new(<M as Module>::ID, M::SELECTED_PROVIDER)
+    }
+
     /// Returns the module that owns this requirement.
     pub const fn required_by(self) -> ModuleId {
         self.required_by
+    }
+
+    /// Returns the explicitly selected provider, if one was declared.
+    pub const fn selected_provider(self) -> Option<ModuleId> {
+        self.selected
     }
 }
 

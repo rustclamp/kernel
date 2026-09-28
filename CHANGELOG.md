@@ -9,6 +9,8 @@
   snapshots with distinct module removal and provider replacement operations.
 - Caller-owned construction dependency graphs with deterministic, structured
   cycle paths.
+- Adapters from additive Core module, requirement, and provision contracts to
+  the typed resolver declarations.
 - Phase 0 package scaffold and development checks.
 - Expanded the package README with the intended resolution flow, contribution
   boundary, and current scaffold status.

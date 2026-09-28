@@ -64,6 +64,11 @@ fn module_id(index: usize) -> ModuleId {
     ModuleId::new(IDS[index])
 }
 
+fn scale_module_id(index: usize) -> ModuleId {
+    let name: &'static str = Box::leak(format!("bench.scale.{index}").into_boxed_str());
+    ModuleId::new(name)
+}
+
 fn main() {
     let no_provisions: [Provision<'_, ClockCapability>; 0] = [];
     let clocks = (0..8).map(|_| FixedClock).collect::<Vec<_>>();
@@ -126,6 +131,15 @@ fn main() {
             .map(|index| ConstructionDependency::new(module_id(index), module_id((index + 1) % 8)))
             .collect(),
     );
+    let scale_ids = (0..20).map(scale_module_id).collect::<Vec<_>>();
+    let scale_clocks = (0..20).map(|_| FixedClock).collect::<Vec<_>>();
+    let scale_provisions = scale_clocks
+        .iter()
+        .enumerate()
+        .map(|(index, clock)| {
+            Provision::<ClockCapability>::new(scale_ids[index], clock as &dyn Clock)
+        })
+        .collect::<Vec<_>>();
 
     let direct = values[7];
     measure(
@@ -266,4 +280,34 @@ fn main() {
             black_box(construction_cycle.validate().unwrap_err());
         },
     );
+    for count in [1, 5, 20] {
+        measure(
+            &format!("resolve_selected_{count}_modules"),
+            &format!("Resolve the last explicit Clock provider from {count} synthetic modules."),
+            || {
+                let resolved = Resolver::resolve::<ClockCapability>(
+                    GREETER,
+                    black_box(&scale_provisions[..count]),
+                    Some(scale_ids[count - 1]),
+                )
+                .unwrap();
+                black_box(resolved.now());
+            },
+        );
+        if count > 1 {
+            let graph = ConstructionGraph::new(
+                scale_ids[..count]
+                    .windows(2)
+                    .map(|pair| ConstructionDependency::new(pair[0], pair[1]))
+                    .collect(),
+            );
+            measure(
+                &format!("construction_graph_validate_chain_{count}"),
+                &format!("Validate an acyclic dependency chain containing {count} modules."),
+                || {
+                    black_box(graph.validate().is_ok());
+                },
+            );
+        }
+    }
 }

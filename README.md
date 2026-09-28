@@ -31,7 +31,7 @@ flowchart LR
 | --- | --- |
 | External Rust dependencies | 0 |
 | Internal dependencies | Core only |
-| Public composition behavior | Typed resolution, cardinality, single-capability snapshot edits, and construction-cycle validation |
+| Public composition behavior | Additive module declarations, typed resolution/cardinality, single-capability snapshot edits, and construction-cycle validation |
 | Tokio, HTTP, or database dependency | None |
 | Behavioral architecture fixtures | None yet |
 
@@ -88,12 +88,19 @@ selects diagnostics deterministically. It does not construct modules or support
 lazy/proxy dependencies. Validation uses an explicit traversal stack, so graph
 depth does not consume the call stack; a 2,048-module chain is covered by a Rust
 test. The latest P2-09 microbench used nine samples of 100,000 validations each
-on the same single host: an acyclic 8-module chain measured 1.780 us/op and an
-8-module cycle measured 1.438 us/op, including diagnostic-path construction.
-An earlier exploratory run before switching to the explicit stack measured
-1.518 / 1.282 us/op; these separate runs are not a controlled A/B comparison.
-All are advisory observations, not performance targets or broad-scale
-guarantees.
+on the same single host: an acyclic 8-module chain measured 1.652 us/op and an
+8-module cycle measured 1.346 us/op, including diagnostic-path construction.
+The Phase 2 scale probe selected an explicit Clock provider from 1/5/20
+synthetic modules at 9/20/39 ns/op. Construction-chain validation at 5/20
+modules measured 939/5,735 ns/op. An earlier exploratory cycle-check run
+measured 1.780/1.438 us/op; these are separate runs, not a controlled A/B
+comparison. All are advisory observations, not performance targets or
+broad-scale guarantees.
+
+Core's `Module`, `Requires<C>`, and `Provides<C>` are additive contracts. The
+Kernel adapts them into existing resolver declarations with
+`CapabilityRequirement::from_module` and `Provision::from_module`; a provider
+does not need to implement unrelated lifecycle hooks.
 
 ```sh
 cargo fmt --all -- --check
