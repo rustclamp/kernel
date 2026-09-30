@@ -4,6 +4,10 @@
 
 ### Added
 
+- `SharedProvision` and `FrozenProcess::resolve_shared` return an owned `Arc`
+  handle, so a resolved value can be `'static` without `Box::leak` (#4).
+- `FactoryProvision` and `FrozenProcess::resolve_with` build only the selected
+  provider after freeze; fallible construction returns `FactoryError` (#4).
 - `FrozenProcess::compose_inferred::<T>` reads the qualifier from the
   blueprint's `add_contribution` edges instead of a `Q` turbofish; several or
   no qualifiers fail with the new `ComposeError::AmbiguousQualifier` (#5).
