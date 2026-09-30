@@ -76,6 +76,19 @@ impl ApplicationBlueprint {
         self
     }
 
+    /// Declares a process with one execution root: the module, its execution, and
+    /// the process that runs only that execution.
+    pub fn add_root(
+        &mut self,
+        process: ProcessId,
+        execution: ExecutionId,
+        module: ModuleId,
+    ) -> &mut Self {
+        self.add_module(module)
+            .add_execution(execution, module)
+            .add_process(process, vec![execution])
+    }
+
     /// Connects a module requirement to its already selected capability provider.
     pub fn require_provider(
         &mut self,
@@ -985,6 +998,44 @@ impl FrozenProcess {
     pub const fn inspection(&self) -> &ProcessProjection {
         &self.inspection
     }
+
+    /// Resolves `consumer`'s unqualified requirement for `C` to the value of the
+    /// provider this process selected at freeze time.
+    ///
+    /// The blueprint stays the single declaration of the edge: the caller supplies
+    /// only the constructed values. An undeclared or inactive optional requirement
+    /// fails with [`CompositionErrorKind::UndeclaredRequirement`]; a selected provider
+    /// missing from `provisions` fails with
+    /// [`CompositionErrorKind::ProviderSelectionUnavailable`].
+    pub fn resolve<'value, C: Capability>(
+        &self,
+        consumer: ModuleId,
+        provisions: &[Provision<'value, C>],
+    ) -> Result<&'value C::Value, CompositionError> {
+        // ponytail: unqualified only; add resolve_qualified when a process needs it.
+        let provider = self
+            .inspection
+            .requirements()
+            .iter()
+            .find(|requirement| {
+                requirement.consumer == consumer
+                    && requirement.capability == C::ID
+                    && requirement.qualifier.is_none()
+            })
+            .and_then(|requirement| requirement.provider);
+        match provider {
+            Some(provider) => Resolver::resolve(consumer, provisions, Some(provider)),
+            None => Err(Resolver::error(
+                CompositionErrorKind::UndeclaredRequirement,
+                consumer,
+                C::ID,
+                None,
+                provisions
+                    .iter()
+                    .map(|provision| (provision.module, provision.value)),
+            )),
+        }
+    }
 }
 
 /// A structured failure while deriving a selected process projection.
@@ -1115,6 +1166,192 @@ pub enum ProjectionError {
     },
 }
 
+impl fmt::Display for ProjectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (application, process) = match self {
+            Self::MissingProcess {
+                application,
+                process,
+                ..
+            }
+            | Self::EmptyProcessRoots {
+                application,
+                process,
+                ..
+            }
+            | Self::MissingExecution {
+                application,
+                process,
+                ..
+            }
+            | Self::MissingModule {
+                application,
+                process,
+                ..
+            }
+            | Self::MissingProvider {
+                application,
+                process,
+                ..
+            }
+            | Self::AmbiguousProvider {
+                application,
+                process,
+                ..
+            }
+            | Self::UnavailableProvider {
+                application,
+                process,
+                ..
+            }
+            | Self::ExcludedProvider {
+                application,
+                process,
+                ..
+            }
+            | Self::ExcludedRoot {
+                application,
+                process,
+                ..
+            }
+            | Self::DependencyCycle {
+                application,
+                process,
+                ..
+            }
+            | Self::OrphanContribution {
+                application,
+                process,
+                ..
+            } => (application.as_str(), process.as_str()),
+        };
+        write!(formatter, "process '{application}/{process}': ")?;
+        match self {
+            Self::MissingProcess { .. } => formatter.write_str("process is not declared"),
+            Self::EmptyProcessRoots { .. } => formatter.write_str("process has no execution root"),
+            Self::MissingExecution { execution, .. } => {
+                write!(
+                    formatter,
+                    "execution '{}' is not declared",
+                    execution.as_str()
+                )
+            }
+            Self::MissingModule { module, .. } => {
+                write!(formatter, "module '{}' is not declared", module.as_str())
+            }
+            Self::MissingProvider {
+                required_by,
+                capability,
+                qualifier,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "no provider for capability '{}'{} required by module '{}'",
+                    capability.as_str(),
+                    Qualified(*qualifier),
+                    required_by.as_str()
+                )
+            }
+            Self::AmbiguousProvider {
+                required_by,
+                capability,
+                qualifier,
+                candidates,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "ambiguous providers for capability '{}'{} required by module '{}': {}",
+                    capability.as_str(),
+                    Qualified(*qualifier),
+                    required_by.as_str(),
+                    candidates
+                        .iter()
+                        .map(|module| module.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            Self::UnavailableProvider {
+                required_by,
+                capability,
+                qualifier,
+                provider,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "selected provider '{}' does not provide capability '{}'{} required by module '{}'",
+                    provider.as_str(),
+                    capability.as_str(),
+                    Qualified(*qualifier),
+                    required_by.as_str()
+                )
+            }
+            Self::ExcludedProvider {
+                required_by,
+                capability,
+                qualifier,
+                provider,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "selected provider '{}' for capability '{}'{} required by module '{}' is excluded",
+                    provider.as_str(),
+                    capability.as_str(),
+                    Qualified(*qualifier),
+                    required_by.as_str()
+                )
+            }
+            Self::ExcludedRoot { module, .. } => {
+                write!(formatter, "root module '{}' is excluded", module.as_str())
+            }
+            Self::DependencyCycle { path, .. } => {
+                write!(
+                    formatter,
+                    "dependency cycle: {}",
+                    path.iter()
+                        .map(|module| module.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" -> ")
+                )
+            }
+            Self::OrphanContribution {
+                contributor,
+                target,
+                qualifier,
+                contribution,
+                ..
+            } => {
+                write!(
+                    formatter,
+                    "required contribution '{}' from module '{}' has no consumer for target '{}' qualified as '{}'",
+                    contribution.as_str(),
+                    contributor.as_str(),
+                    target.as_str(),
+                    qualifier.as_str()
+                )
+            }
+        }
+    }
+}
+
+impl Error for ProjectionError {}
+
+/// Renders an optional qualifier suffix in diagnostics.
+struct Qualified(Option<QualifierId>);
+
+impl fmt::Display for Qualified {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(qualifier) => write!(formatter, " qualified as '{}'", qualifier.as_str()),
+            None => Ok(()),
+        }
+    }
+}
+
 /// Caller-owned declarations for one typed contribution target and qualifier.
 pub struct TargetComposition<T: ContributionTarget, Q: Qualifier> {
     contributions: Vec<(ModuleId, T::Contribution)>,
@@ -1181,6 +1418,40 @@ pub enum TargetCompositionError<E> {
     },
     /// The selected target rejected the declarations.
     Target(E),
+}
+
+impl<E: fmt::Display> fmt::Display for TargetCompositionError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnconsumedRequired {
+                target,
+                contribution,
+                qualifier,
+                contributors,
+            } => write!(
+                formatter,
+                "required contribution '{}' qualified as '{}' has no target '{}'; contributors: {}",
+                contribution.as_str(),
+                qualifier.as_str(),
+                target.as_str(),
+                contributors
+                    .iter()
+                    .map(|module| module.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Target(error) => write!(formatter, "target rejected declarations: {error}"),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for TargetCompositionError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Target(error) => Some(error),
+            Self::UnconsumedRequired { .. } => None,
+        }
+    }
 }
 
 /// A capability implementation associated with the module that supplies it.
@@ -1396,6 +1667,8 @@ pub enum CompositionErrorKind {
     AmbiguousProviders,
     /// The selected module is not among the available provisions.
     ProviderSelectionUnavailable,
+    /// The frozen process has no active requirement for this consumer and capability.
+    UndeclaredRequirement,
 }
 
 /// A composition failure with stable identities and candidate context.

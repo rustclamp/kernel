@@ -4,6 +4,11 @@
 
 ### Added
 
+- `FrozenProcess::resolve` returns a capability value through the provider the
+  frozen process selected, so the blueprint is the only declaration of an edge
+  (ADR 0017). New `CompositionErrorKind::UndeclaredRequirement`.
+- `ApplicationBlueprint::add_root` declares a single-root process in one call.
+- `Display` and `Error` for `ProjectionError` and `TargetCompositionError`.
 - Typed single-capability resolution with explicit selection and structured errors.
 - Typed qualifiers, optional/many cardinality, and caller-owned composition
   snapshots with distinct module removal and provider replacement operations.
