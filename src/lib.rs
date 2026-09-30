@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use rustclamp_core::{
     ApplicationId, Capability, CapabilityId, Contribution, ContributionId, ContributionTarget,
@@ -1012,6 +1013,72 @@ impl FrozenProcess {
         consumer: ModuleId,
         provisions: &[Provision<'value, C>],
     ) -> Result<&'value C::Value, CompositionError> {
+        self.resolve_frozen(
+            consumer,
+            C::ID,
+            provisions
+                .iter()
+                .map(|provision| (provision.module, provision.value)),
+            provisions.len(),
+        )
+    }
+
+    /// Like [`FrozenProcess::resolve`], but returns an owned [`Arc`] handle.
+    ///
+    /// The value can outlive the provisions slice and be moved into `'static`
+    /// state (a server, a spawned task) without `Box::leak`.
+    pub fn resolve_shared<C: Capability>(
+        &self,
+        consumer: ModuleId,
+        provisions: &[SharedProvision<C>],
+    ) -> Result<Arc<C::Value>, CompositionError> {
+        self.resolve_frozen(
+            consumer,
+            C::ID,
+            provisions
+                .iter()
+                .map(|provision| (provision.module, &provision.value)),
+            provisions.len(),
+        )
+        .map(Arc::clone)
+    }
+
+    /// Builds the value of the provider this process selected, after freeze.
+    ///
+    /// Only the selected provider's factory runs, so a provider whose
+    /// construction can fail (opening a database) is built once, and only when
+    /// the frozen process actually uses it. A factory failure is returned as
+    /// [`FactoryError::Build`].
+    pub fn resolve_with<C: Capability, E>(
+        &self,
+        consumer: ModuleId,
+        provisions: Vec<FactoryProvision<C, E>>,
+    ) -> Result<Arc<C::Value>, FactoryError<E>> {
+        let selected = self
+            .resolve_frozen(
+                consumer,
+                C::ID,
+                provisions
+                    .iter()
+                    .map(|provision| (provision.module, provision)),
+                provisions.len(),
+            )
+            .map_err(FactoryError::Composition)?
+            .module;
+        let provision = provisions
+            .into_iter()
+            .find(|provision| provision.module == selected)
+            .expect("selected provision is among the candidates");
+        (provision.factory)().map_err(FactoryError::Build)
+    }
+
+    fn resolve_frozen<'value, V: ?Sized + 'value>(
+        &self,
+        consumer: ModuleId,
+        capability: CapabilityId,
+        provisions: impl Iterator<Item = (ModuleId, &'value V)> + Clone,
+        count: usize,
+    ) -> Result<&'value V, CompositionError> {
         // ponytail: unqualified only; add resolve_qualified when a process needs it.
         let provider = self
             .inspection
@@ -1019,20 +1086,25 @@ impl FrozenProcess {
             .iter()
             .find(|requirement| {
                 requirement.consumer == consumer
-                    && requirement.capability == C::ID
+                    && requirement.capability == capability
                     && requirement.qualifier.is_none()
             })
             .and_then(|requirement| requirement.provider);
         match provider {
-            Some(provider) => Resolver::resolve(consumer, provisions, Some(provider)),
+            Some(provider) => Resolver::resolve_candidates(
+                consumer,
+                capability,
+                None,
+                provisions,
+                count,
+                Some(provider),
+            ),
             None => Err(Resolver::error(
                 CompositionErrorKind::UndeclaredRequirement,
                 consumer,
-                C::ID,
+                capability,
                 None,
-                provisions
-                    .iter()
-                    .map(|provision| (provision.module, provision.value)),
+                provisions,
             )),
         }
     }
@@ -1659,6 +1731,80 @@ impl<'a, C: Capability> Provision<'a, C> {
     /// Returns the provided capability value.
     pub const fn value(&self) -> &'a C::Value {
         self.value
+    }
+}
+
+/// A capability value owned through an [`Arc`], with no borrow to keep alive.
+///
+/// Use with [`FrozenProcess::resolve_shared`] when the resolved value must be
+/// `'static` (shared state, spawned tasks).
+pub struct SharedProvision<C: Capability> {
+    module: ModuleId,
+    value: Arc<C::Value>,
+}
+
+impl<C: Capability> SharedProvision<C> {
+    /// Associates a module identity with a shared value implementing capability `C`.
+    pub fn new(module: ModuleId, value: Arc<C::Value>) -> Self {
+        Self { module, value }
+    }
+
+    /// Returns the module identity associated with this provision.
+    pub const fn module(&self) -> ModuleId {
+        self.module
+    }
+}
+
+/// A capability provision built on demand, for values whose construction can fail.
+///
+/// The factory runs only if [`FrozenProcess::resolve_with`] selects this module.
+pub struct FactoryProvision<C: Capability, E> {
+    module: ModuleId,
+    factory: Box<dyn FnOnce() -> Result<Arc<C::Value>, E>>,
+}
+
+impl<C: Capability, E> FactoryProvision<C, E> {
+    /// Associates a module identity with a factory for capability `C`.
+    pub fn new(
+        module: ModuleId,
+        factory: impl FnOnce() -> Result<Arc<C::Value>, E> + 'static,
+    ) -> Self {
+        Self {
+            module,
+            factory: Box::new(factory),
+        }
+    }
+
+    /// Returns the module identity associated with this provision.
+    pub const fn module(&self) -> ModuleId {
+        self.module
+    }
+}
+
+/// Why [`FrozenProcess::resolve_with`] failed.
+#[derive(Debug, Eq, PartialEq)]
+pub enum FactoryError<E> {
+    /// The provider could not be selected.
+    Composition(CompositionError),
+    /// The selected provider's factory failed.
+    Build(E),
+}
+
+impl<E: fmt::Display> fmt::Display for FactoryError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Composition(error) => error.fmt(formatter),
+            Self::Build(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for FactoryError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Composition(error) => Some(error),
+            Self::Build(error) => Some(error),
+        }
     }
 }
 
