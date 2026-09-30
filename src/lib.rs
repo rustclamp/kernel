@@ -1048,13 +1048,52 @@ impl FrozenProcess {
         target: &T,
         contributions: Vec<(ModuleId, T::Contribution)>,
     ) -> Result<T::Runtime, ComposeError<T::Error>> {
+        self.compose_qualified(target, Q::ID, contributions)
+    }
+
+    /// [`compose`](Self::compose), with the qualifier read from the blueprint's
+    /// `add_contribution` edges for `T` instead of named again by the caller.
+    ///
+    /// Fails with [`ComposeError::AmbiguousQualifier`] when this process has
+    /// edges into `T` under more than one qualifier, or none: name it with
+    /// `compose::<T, Q>` then.
+    pub fn compose_inferred<T: ContributionTarget>(
+        &self,
+        target: &T,
+        contributions: Vec<(ModuleId, T::Contribution)>,
+    ) -> Result<T::Runtime, ComposeError<T::Error>> {
+        let qualifiers = self
+            .inspection
+            .contributions()
+            .iter()
+            .filter(|edge| edge.target == T::ID && edge.contribution == T::Contribution::ID)
+            .map(|edge| edge.qualifier)
+            .collect::<BTreeSet<_>>();
+        match qualifiers.len() {
+            1 => {
+                let qualifier = *qualifiers.first().expect("one qualifier");
+                self.compose_qualified(target, qualifier, contributions)
+            }
+            _ => Err(ComposeError::AmbiguousQualifier {
+                target: T::ID,
+                qualifiers: qualifiers.into_iter().collect(),
+            }),
+        }
+    }
+
+    fn compose_qualified<T: ContributionTarget>(
+        &self,
+        target: &T,
+        qualifier: QualifierId,
+        contributions: Vec<(ModuleId, T::Contribution)>,
+    ) -> Result<T::Runtime, ComposeError<T::Error>> {
         let declared = self
             .inspection
             .contributions()
             .iter()
             .filter(|edge| {
                 edge.target == T::ID
-                    && edge.qualifier == Q::ID
+                    && edge.qualifier == qualifier
                     && edge.contribution == T::Contribution::ID
             })
             .map(|edge| edge.contributor)
@@ -1069,7 +1108,7 @@ impl FrozenProcess {
         {
             return Err(ComposeError::UndeclaredContribution {
                 target: T::ID,
-                qualifier: Q::ID,
+                qualifier,
                 contributor: *module,
             });
         }
@@ -1079,7 +1118,7 @@ impl FrozenProcess {
         {
             return Err(ComposeError::MissingContribution {
                 target: T::ID,
-                qualifier: Q::ID,
+                qualifier,
                 contributor: *module,
             });
         }
@@ -1524,6 +1563,14 @@ pub enum ComposeError<E> {
         /// The declared module that supplied nothing.
         contributor: ModuleId,
     },
+    /// [`FrozenProcess::compose_inferred`] found edges into the target under
+    /// several qualifiers, or none, so it cannot pick one.
+    AmbiguousQualifier {
+        /// The target being composed.
+        target: ContributionTargetId,
+        /// The qualifiers the process's edges use, sorted; empty for none.
+        qualifiers: Vec<QualifierId>,
+    },
     /// The target rejected the selected contributions.
     Target(E),
 }
@@ -1553,6 +1600,21 @@ impl<E: fmt::Display> fmt::Display for ComposeError<E> {
                 target.as_str(),
                 qualifier.as_str()
             ),
+            Self::AmbiguousQualifier { target, qualifiers } if qualifiers.is_empty() => write!(
+                formatter,
+                "target '{}' has no contribution edges in this process to infer a qualifier from",
+                target.as_str()
+            ),
+            Self::AmbiguousQualifier { target, qualifiers } => write!(
+                formatter,
+                "target '{}' is contributed to under several qualifiers ({}); name one with compose::<T, Q>",
+                target.as_str(),
+                qualifiers
+                    .iter()
+                    .map(|qualifier| qualifier.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Target(error) => write!(formatter, "target rejected contributions: {error}"),
         }
     }
@@ -1562,7 +1624,9 @@ impl<E: Error + 'static> Error for ComposeError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Target(error) => Some(error),
-            Self::UndeclaredContribution { .. } | Self::MissingContribution { .. } => None,
+            Self::UndeclaredContribution { .. }
+            | Self::MissingContribution { .. }
+            | Self::AmbiguousQualifier { .. } => None,
         }
     }
 }

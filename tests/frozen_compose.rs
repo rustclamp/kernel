@@ -107,3 +107,42 @@ fn an_included_module_without_an_edge_fails() {
     ));
     assert!(error.to_string().contains("without a blueprint edge"));
 }
+
+#[test]
+fn compose_inferred_reads_the_qualifier_from_the_blueprint() {
+    let worker = freeze(WORKER);
+    assert_eq!(
+        worker.compose_inferred(&Routes, supplied()),
+        worker.compose::<Routes, Handlers>(&Routes, supplied())
+    );
+    assert_eq!(
+        worker.compose_inferred(&Routes, supplied()).unwrap(),
+        ["echo", "sleep"]
+    );
+}
+
+#[test]
+fn compose_inferred_refuses_to_guess_between_qualifiers() {
+    struct Admin;
+    impl Qualifier for Admin {
+        const ID: QualifierId = QualifierId::new("test.qualifier.admin");
+    }
+    let mut app = ApplicationBlueprint::new(APP);
+    app.add_root(WORKER, WORKER_EXEC, WORKER_ROOT)
+        .add_module(ECHO)
+        .add_module(SLEEP)
+        .consume_target(WORKER_ROOT, Routes::ID, Handlers::ID)
+        .consume_target(WORKER_ROOT, Routes::ID, Admin::ID)
+        .add_contribution(ECHO, Routes::ID, Handlers::ID, Route::ID)
+        .add_contribution(SLEEP, Routes::ID, Admin::ID, Route::ID);
+    let worker = app.freeze(WORKER).unwrap();
+    let error = worker.compose_inferred(&Routes, supplied()).unwrap_err();
+    assert_eq!(
+        error,
+        ComposeError::AmbiguousQualifier {
+            target: Routes::ID,
+            qualifiers: vec![Admin::ID, Handlers::ID],
+        }
+    );
+    assert!(error.to_string().contains("compose::<T, Q>"), "{error}");
+}

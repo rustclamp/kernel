@@ -4,6 +4,9 @@
 
 ### Added
 
+- `FrozenProcess::compose_inferred::<T>` reads the qualifier from the
+  blueprint's `add_contribution` edges instead of a `Q` turbofish; several or
+  no qualifiers fail with the new `ComposeError::AmbiguousQualifier` (#5).
 - `FrozenProcess::compose` builds a contribution target from the frozen
   process: out-of-process contributions are dropped, and supplied values must
   match the blueprint edges (new `ComposeError`).
