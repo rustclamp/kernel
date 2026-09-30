@@ -4,6 +4,9 @@
 
 ### Added
 
+- `FrozenProcess::compose` builds a contribution target from the frozen
+  process: out-of-process contributions are dropped, and supplied values must
+  match the blueprint edges (new `ComposeError`).
 - `FrozenProcess::resolve` returns a capability value through the provider the
   frozen process selected, so the blueprint is the only declaration of an edge
   (ADR 0017). New `CompositionErrorKind::UndeclaredRequirement`.

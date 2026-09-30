@@ -1036,6 +1036,55 @@ impl FrozenProcess {
             )),
         }
     }
+
+    /// Builds target `T` (qualifier `Q`) from the contributions this process selected.
+    ///
+    /// The blueprint's `add_contribution` edges stay the single declaration:
+    /// contributions from modules outside this process are dropped, and the rest
+    /// must match the frozen edges exactly — an included module supplying an
+    /// undeclared contribution, or a declared contributor supplying none, fails.
+    pub fn compose<T: ContributionTarget, Q: Qualifier>(
+        &self,
+        target: &T,
+        contributions: Vec<(ModuleId, T::Contribution)>,
+    ) -> Result<T::Runtime, ComposeError<T::Error>> {
+        let declared = self
+            .inspection
+            .contributions()
+            .iter()
+            .filter(|edge| {
+                edge.target == T::ID
+                    && edge.qualifier == Q::ID
+                    && edge.contribution == T::Contribution::ID
+            })
+            .map(|edge| edge.contributor)
+            .collect::<BTreeSet<_>>();
+        let selected = contributions
+            .into_iter()
+            .filter(|(module, _)| self.inspection.includes(*module))
+            .collect::<Vec<_>>();
+        if let Some((module, _)) = selected
+            .iter()
+            .find(|(module, _)| !declared.contains(module))
+        {
+            return Err(ComposeError::UndeclaredContribution {
+                target: T::ID,
+                qualifier: Q::ID,
+                contributor: *module,
+            });
+        }
+        if let Some(module) = declared
+            .iter()
+            .find(|declared| !selected.iter().any(|(module, _)| module == *declared))
+        {
+            return Err(ComposeError::MissingContribution {
+                target: T::ID,
+                qualifier: Q::ID,
+                contributor: *module,
+            });
+        }
+        target.build(&selected).map_err(ComposeError::Target)
+    }
 }
 
 /// A structured failure while deriving a selected process projection.
@@ -1450,6 +1499,70 @@ impl<E: Error + 'static> Error for TargetCompositionError<E> {
         match self {
             Self::Target(error) => Some(error),
             Self::UnconsumedRequired { .. } => None,
+        }
+    }
+}
+
+/// A mismatch between supplied contributions and the frozen process, or a target failure.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ComposeError<E> {
+    /// An included module supplied a contribution the frozen process does not declare.
+    UndeclaredContribution {
+        /// The target being composed.
+        target: ContributionTargetId,
+        /// The target qualifier.
+        qualifier: QualifierId,
+        /// The module whose contribution has no blueprint edge.
+        contributor: ModuleId,
+    },
+    /// A contributor declared in the frozen process supplied no contribution.
+    MissingContribution {
+        /// The target being composed.
+        target: ContributionTargetId,
+        /// The target qualifier.
+        qualifier: QualifierId,
+        /// The declared module that supplied nothing.
+        contributor: ModuleId,
+    },
+    /// The target rejected the selected contributions.
+    Target(E),
+}
+
+impl<E: fmt::Display> fmt::Display for ComposeError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UndeclaredContribution {
+                target,
+                qualifier,
+                contributor,
+            } => write!(
+                formatter,
+                "module '{}' contributes to target '{}' qualified as '{}' without a blueprint edge in this process",
+                contributor.as_str(),
+                target.as_str(),
+                qualifier.as_str()
+            ),
+            Self::MissingContribution {
+                target,
+                qualifier,
+                contributor,
+            } => write!(
+                formatter,
+                "module '{}' is declared to contribute to target '{}' qualified as '{}' but supplied nothing",
+                contributor.as_str(),
+                target.as_str(),
+                qualifier.as_str()
+            ),
+            Self::Target(error) => write!(formatter, "target rejected contributions: {error}"),
+        }
+    }
+}
+
+impl<E: Error + 'static> Error for ComposeError<E> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Target(error) => Some(error),
+            Self::UndeclaredContribution { .. } | Self::MissingContribution { .. } => None,
         }
     }
 }
