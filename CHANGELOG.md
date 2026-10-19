@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Ready for crates.io: `publish = false` is gone and the manifest carries
+  homepage, documentation, keywords and categories. Nothing is uploaded until
+  rustclamp's `tools/publish.py --execute` runs.
+
 ### Added
 
 - `SharedProvision` and `FrozenProcess::resolve_shared` return an owned `Arc`
