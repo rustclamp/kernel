@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-10-19
+
 ### Changed
 
 - Ready for crates.io: `publish = false` is gone and the manifest carries
